@@ -8,12 +8,18 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: ollama-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
     if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: mlk/ollama-review-action@main
+      # Bump this SHA when cutting a release.
+      - uses: mlk/ollama-review-action@0c514743294d1f8e0364f93ecfe673fd8baa4c02 # v1
         with:
           model: glm-5.3
         env:

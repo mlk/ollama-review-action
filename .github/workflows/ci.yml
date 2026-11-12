@@ -9,9 +9,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
@@ -34,3 +39,18 @@ jobs:
             git diff dist
             exit 1
           fi
+
+      - name: Verify the pinned action SHA is consistent
+        run: |
+          readme_sha=$(grep -oE 'ollama-review-action@[0-9a-f]{40}' README.md | head -1 | cut -d@ -f2)
+          workflow_sha=$(grep -oE 'ollama-review-action@[0-9a-f]{40}' .github/workflows/self-review.yml | head -1 | cut -d@ -f2)
+          if [ -z "$readme_sha" ] || [ -z "$workflow_sha" ]; then
+            echo "Could not find a pinned action SHA in README.md or self-review.yml."
+            exit 1
+          fi
+          if [ "$readme_sha" != "$workflow_sha" ]; then
+            echo "Pinned SHAs differ: README.md=$readme_sha self-review.yml=$workflow_sha"
+            echo "Update both to the same release SHA."
+            exit 1
+          fi
+          echo "Pinned action SHA: $readme_sha"

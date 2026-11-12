@@ -30,19 +30,44 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: ollama-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      - uses: mlk/ollama-review-action@v1
+      - uses: mlk/ollama-review-action@0c514743294d1f8e0364f93ecfe673fd8baa4c02 # v1
         with:
           model: glm-5.3
         env:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
 ```
 
-`actions/checkout` is not required by the action itself (it reads the diff from the API), but keeping it lets the model see the full repository if you extend the prompt later.
+There is deliberately no `actions/checkout` step: the action reads the diff through the GitHub API and never touches the working tree, so checking out the repository would download it for nothing on every push. Add a checkout only if you extend the action to read files from the repository.
+
+The four details in that snippet are worth keeping:
+
+| Line | Why |
+| --- | --- |
+| `permissions` | The action only needs to read the repo and write to the pull request. Anything broader is a risk if the action is ever compromised. |
+| `concurrency` | `synchronize` fires on every push. Without a group, rapid pushes start overlapping runs that post reviews on top of each other. `cancel-in-progress` keeps only the newest one. |
+| `timeout-minutes` | The runner default is 6 hours. A stuck model call should fail in minutes, not hold a runner. |
+| Commit SHA pin | See below. |
+
+### Pinning to a commit SHA
+
+The example pins the action to a commit SHA rather than the `v1` tag. Tags are mutable - anyone who can push to this repository can repoint `v1` at different code, and that code runs in your workflow with access to your `OLLAMA_API_KEY` and a token with `pull-requests: write`. A SHA is immutable.
+
+The trailing `# v1` comment is just for humans; GitHub ignores it. To move to a newer release, look up the SHA for the tag you want and replace it:
+
+```bash
+gh api repos/mlk/ollama-review-action/commits/v1 --jq .sha
+```
+
+Pin the same SHA in the README and in your own workflow - CI in this repository checks that the two never drift apart. Pinning to a SHA means you do not get new releases automatically. If you would rather track the tag, use `mlk/ollama-review-action@v1` and accept the tradeoff.
 
 ### Pull requests from forks
 
@@ -85,7 +110,7 @@ This is safe here because the action never checks out or executes code from the 
 ## Blocking a pull request
 
 ```yaml
-- uses: mlk/ollama-review-action@v1
+- uses: mlk/ollama-review-action@0c514743294d1f8e0364f93ecfe673fd8baa4c02 # v1
   with:
     model: glm-5.3
     fail_on: critical
@@ -100,7 +125,7 @@ The review is always posted first; the job fails afterwards if the model reporte
 Add repository-specific instructions with the `prompt` input:
 
 ```yaml
-- uses: mlk/ollama-review-action@v1
+- uses: mlk/ollama-review-action@0c514743294d1f8e0364f93ecfe673fd8baa4c02 # v1
   with:
     model: glm-5.3
     prompt: |
@@ -144,6 +169,21 @@ npm run build       # bundle to dist/index.js with ncc
 ```
 
 `dist/` is committed because GitHub Actions runs the bundled JavaScript directly. After changing anything under `src/`, run `npm run build` and commit the updated bundle - CI fails if `dist/` is out of date.
+
+### Cutting a release
+
+```bash
+npm run build
+git commit -am "..."          # include the rebuilt dist/
+git tag -a v1 -m "v1"        # move the tag to the release commit
+git push origin main --follow-tags
+```
+
+Then bump the pinned SHA in `README.md` and `.github/workflows/self-review.yml` to the new commit, so the example always points at the release it documents. CI fails if those two pins drift apart.
+
+```bash
+gh api repos/mlk/ollama-review-action/commits/v1 --jq .sha
+```
 
 ## License
 
