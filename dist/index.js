@@ -36273,7 +36273,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getPullRequestContext = getPullRequestContext;
 exports.fetchChangedFiles = fetchChangedFiles;
-exports.postReview = postReview;
+exports.upsertSummaryComment = upsertSummaryComment;
+exports.replaceInlineComments = replaceInlineComments;
 exports.anchorFindings = anchorFindings;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
@@ -36349,55 +36350,96 @@ async function authenticatedLogin(octokit) {
     }
 }
 /**
- * Creates the pull request review, or updates the previous review left by this
- * action when the pull request already has one (so repeated pushes do not spam
- * the conversation).
+ * Posts the review summary as a sticky pull request comment.
+ *
+ * A review submitted through the pull request reviews API is immutable, so the
+ * summary lives in an issue comment instead: that one can be edited in place
+ * when the pull request is pushed to again.
  */
-async function postReview(octokit, pullNumber, payload) {
+async function upsertSummaryComment(octokit, pullNumber, body, marker) {
     const { owner, repo } = ownerRepo();
+    const login = await authenticatedLogin(octokit);
+    const existing = await octokit.paginate(octokit.rest.issues.listComments, {
+        owner,
+        repo,
+        issue_number: pullNumber,
+        per_page: 100,
+    });
+    const previous = existing
+        .filter((comment) => comment.body?.includes(marker) && (login === undefined || comment.user?.login === login))
+        .pop();
+    if (previous) {
+        const { data } = await octokit.rest.issues.updateComment({
+            owner,
+            repo,
+            comment_id: previous.id,
+            body,
+        });
+        core.info(`Updated summary comment ${data.id}.`);
+        return data.id;
+    }
+    const { data } = await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: pullNumber,
+        body,
+    });
+    core.info(`Created summary comment ${data.id}.`);
+    return data.id;
+}
+/**
+ * Removes the inline comments this action left on a previous run and posts the
+ * current findings.
+ */
+async function replaceInlineComments(octokit, pullNumber, comments, marker, headSha) {
+    const { owner, repo } = ownerRepo();
+    const login = await authenticatedLogin(octokit);
     try {
-        const login = await authenticatedLogin(octokit);
-        const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
+        const previous = await octokit.paginate(octokit.rest.pulls.listReviewComments, {
             owner,
             repo,
             pull_number: pullNumber,
             per_page: 100,
         });
-        const previous = [...reviews]
-            .reverse()
-            .find((review) => review.body?.includes(payload.marker) &&
-            (login === undefined || review.user?.login === login));
-        if (previous) {
+        const stale = previous.filter((comment) => comment.body?.includes(marker) && (login === undefined || comment.user?.login === login));
+        for (const comment of stale) {
             try {
-                const { data } = await octokit.rest.pulls.updateReview({
+                await octokit.rest.pulls.deleteReviewComment({
                     owner,
                     repo,
-                    pull_number: pullNumber,
-                    review_id: previous.id,
-                    body: payload.body,
-                    comments: payload.comments,
+                    comment_id: comment.id,
                 });
-                core.info(`Updated existing review ${data.id}.`);
-                return data.id;
             }
             catch (error) {
-                core.warning(`Could not update review ${previous.id} (${error.message}); creating a new one.`);
+                core.warning(`Could not remove the previous inline comment ${comment.id}: ${error.message}`);
             }
+        }
+        if (stale.length > 0) {
+            core.info(`Removed ${stale.length} inline comment(s) from the previous run.`);
         }
     }
     catch (error) {
-        core.debug(`Skipping review lookup: ${error.message}`);
+        core.warning(`Could not list previous inline comments: ${error.message}`);
     }
-    const { data } = await octokit.rest.pulls.createReview({
-        owner,
-        repo,
-        pull_number: pullNumber,
-        event: 'COMMENT',
-        body: payload.body,
-        comments: payload.comments,
-    });
-    core.info(`Created review ${data.id}.`);
-    return data.id;
+    for (const comment of comments) {
+        const payload = {
+            owner,
+            repo,
+            pull_number: pullNumber,
+            commit_id: headSha,
+            path: comment.path,
+            line: comment.line,
+            side: comment.side,
+            body: comment.body,
+        };
+        if (comment.start_line !== undefined) {
+            payload.start_line = comment.start_line;
+            payload.start_side = comment.start_side ?? 'RIGHT';
+        }
+        await octokit.rest.pulls.createReviewComment(payload);
+    }
+    core.info(`Posted ${comments.length} inline comment(s).`);
+    return comments.length;
 }
 /**
  * Maps model findings onto files and lines that GitHub actually accepts a
@@ -36491,17 +36533,18 @@ const parse_1 = __nccwpck_require__(2828);
 const prompt_1 = __nccwpck_require__(705);
 const types_1 = __nccwpck_require__(6141);
 const { getOctokit } = github;
-const MARKER_PREFIX = '<!-- ollama-review-action:';
+const MARKER_SUMMARY = '<!-- ollama-review-action:summary';
+const MARKER_INLINE = '<!-- ollama-review-action:inline -->';
 function severityEmoji(severity) {
     switch (severity) {
         case 'blocker':
             return '\u{1F534}';
         case 'critical':
-            return '\u{1F7E2}';
+            return '\u{1F7E0}';
         case 'major':
             return '\u{1F7E1}';
         case 'minor':
-            return '\u{1F7E0}';
+            return '\u{1F535}';
         default:
             return '\u{26AA}';
     }
@@ -36537,11 +36580,12 @@ function renderFindingBody(finding) {
         }
         parts.push('');
     }
+    parts.push(MARKER_INLINE);
     return parts.join('\n').trimEnd();
 }
 function renderSummaryBody(model, summary, findings, unanchored) {
     const lines = [];
-    lines.push(`${MARKER_PREFIX}model=${model} -->`);
+    lines.push(`${MARKER_SUMMARY}:model=${model} -->`);
     lines.push('');
     lines.push('## Ollama review');
     lines.push('');
@@ -36647,22 +36691,24 @@ async function run() {
         }
         return comment;
     });
-    let reviewId = '';
+    let summaryCommentId = '';
     if (config.postReview) {
-        reviewId = String(await (0, github_1.postReview)(octokit, pullRequest.number, {
-            body,
-            comments,
-            marker: MARKER_PREFIX,
-        }));
+        summaryCommentId = String(await (0, github_1.upsertSummaryComment)(octokit, pullRequest.number, body, MARKER_SUMMARY));
+        await (0, github_1.replaceInlineComments)(octokit, pullRequest.number, comments, MARKER_INLINE, pullRequest.headSha);
     }
     else {
         core.info('post_review is false - not posting to GitHub.');
         core.info(body);
     }
-    await core.summary.addRaw(body).write();
+    try {
+        await core.summary.addRaw(body).write();
+    }
+    catch (error) {
+        core.warning(`Could not write the job summary: ${error.message}`);
+    }
     core.setOutput('summary', summary);
     core.setOutput('findings_count', anchored.length);
-    core.setOutput('review_id', reviewId);
+    core.setOutput('comment_id', summaryCommentId);
     const worst = anchored
         .map((finding) => finding.severity)
         .sort((a, b) => types_1.SEVERITIES.indexOf(b) - types_1.SEVERITIES.indexOf(a))[0];

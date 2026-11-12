@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { loadConfig } from './config';
 import { chunkDiffs, matchesAnyGlob, renderDiff, truncate } from './diff';
-import { anchorFindings, fetchChangedFiles, getPullRequestContext, postReview } from './github';
+import { anchorFindings, fetchChangedFiles, getPullRequestContext, replaceInlineComments, upsertSummaryComment } from './github';
 import { chatCompletion } from './ollama';
 import { parseReview } from './parse';
 import { buildUserPrompt, SYSTEM_PROMPT } from './prompt';
@@ -11,18 +11,18 @@ import { Finding, FileDiff, meetsThreshold, SEVERITIES, Severity } from './types
 
 const { getOctokit } = github;
 
-const MARKER_PREFIX = '<!-- ollama-review-action:';
+const MARKER_SUMMARY = '<!-- ollama-review-action:summary';
+const MARKER_INLINE = '<!-- ollama-review-action:inline -->';
 
-function severityEmoji(severity: Severity): string {
-  switch (severity) {
+function severityEmoji(severity: Severity): string {  switch (severity) {
     case 'blocker':
       return '\u{1F534}';
     case 'critical':
-      return '\u{1F7E2}';
+      return '\u{1F7E0}';
     case 'major':
       return '\u{1F7E1}';
     case 'minor':
-      return '\u{1F7E0}';
+      return '\u{1F535}';
     default:
       return '\u{26AA}';
   }
@@ -63,9 +63,10 @@ function renderFindingBody(finding: Finding): string {
     parts.push('');
   }
 
+  parts.push(MARKER_INLINE);
+
   return parts.join('\n').trimEnd();
 }
-
 function renderSummaryBody(
   model: string,
   summary: string,
@@ -74,7 +75,7 @@ function renderSummaryBody(
 ): string {
   const lines: string[] = [];
 
-  lines.push(`${MARKER_PREFIX}model=${model} -->`);
+  lines.push(`${MARKER_SUMMARY}:model=${model} -->`);
   lines.push('');
   lines.push('## Ollama review');
   lines.push('');
@@ -225,25 +226,33 @@ async function run(): Promise<void> {
     return comment;
   });
 
-  let reviewId = '';
+  let summaryCommentId = '';
   if (config.postReview) {
-    reviewId = String(
-      await postReview(octokit, pullRequest.number, {
-        body,
-        comments,
-        marker: MARKER_PREFIX,
-      }),
+    summaryCommentId = String(
+      await upsertSummaryComment(octokit, pullRequest.number, body, MARKER_SUMMARY),
+    );
+
+    await replaceInlineComments(
+      octokit,
+      pullRequest.number,
+      comments,
+      MARKER_INLINE,
+      pullRequest.headSha,
     );
   } else {
     core.info('post_review is false - not posting to GitHub.');
     core.info(body);
   }
 
-  await core.summary.addRaw(body).write();
+  try {
+    await core.summary.addRaw(body).write();
+  } catch (error) {
+    core.warning(`Could not write the job summary: ${(error as Error).message}`);
+  }
 
   core.setOutput('summary', summary);
   core.setOutput('findings_count', anchored.length);
-  core.setOutput('review_id', reviewId);
+  core.setOutput('comment_id', summaryCommentId);
 
   const worst = anchored
     .map((finding) => finding.severity)

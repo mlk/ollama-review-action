@@ -67,9 +67,9 @@ outputs:
   summary:
     description: 'The overall review summary produced by the model.'
   findings_count:
-    description: 'Number of findings posted.'
-  review_id:
-    description: 'ID of the GitHub pull request review that was created or updated.'
+    description: 'Number of findings posted as inline comments.'
+  comment_id:
+    description: 'ID of the pull request comment holding the review summary.'
   failed:
     description: '"true" when the review contains a finding at or above the fail_on severity.'
 

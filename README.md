@@ -79,7 +79,7 @@ This is safe here because the action never checks out or executes code from the 
 | --- | --- |
 | `summary` | The overall review summary. |
 | `findings_count` | Number of findings posted as inline comments. |
-| `review_id` | ID of the review that was created or updated. |
+| `comment_id` | ID of the pull request comment holding the review summary. |
 | `failed` | `true` when a finding reached the `fail_on` threshold. |
 
 ## Blocking a pull request
@@ -116,7 +116,8 @@ Add repository-specific instructions with the `prompt` input:
 3. Diffs larger than `max_diff_chars` are split into chunks and reviewed in separate requests; the findings are merged afterwards.
 4. The model returns JSON (`summary` + `findings`). The action parses it, tolerating markdown fences and reasoning blocks.
 5. Each finding is anchored to a line GitHub accepts a comment on. Findings that land on a line outside the diff are either snapped to the nearest valid line or listed in the summary under "Other observations".
-6. The review is posted through `POST /pulls/{n}/reviews` with `event: COMMENT`. On a new push to an already-reviewed PR, the previous review is updated instead of adding another one, so the conversation does not fill up with stale reviews.
+6. The summary is posted as a sticky pull request comment and each finding is posted as an inline review comment on the changed line.
+7. When the pull request is pushed to again, the previous summary comment is edited in place and the previous inline comments are removed before the new ones are posted, so a busy pull request does not fill up with stale reviews.
 
 ## Troubleshooting
 

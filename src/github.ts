@@ -15,12 +15,6 @@ export interface ReviewComment {
   body: string;
 }
 
-export interface ReviewPayload {
-  body: string;
-  comments: ReviewComment[];
-  marker: string;
-}
-
 function ownerRepo(): { owner: string; repo: string } {
   const owner = context.repo.owner;
   const repo = context.repo.repo;
@@ -128,69 +122,128 @@ async function authenticatedLogin(
 }
 
 /**
- * Creates the pull request review, or updates the previous review left by this
- * action when the pull request already has one (so repeated pushes do not spam
- * the conversation).
+ * Posts the review summary as a sticky pull request comment.
+ *
+ * A review submitted through the pull request reviews API is immutable, so the
+ * summary lives in an issue comment instead: that one can be edited in place
+ * when the pull request is pushed to again.
  */
-export async function postReview(
+export async function upsertSummaryComment(
   octokit: ReturnType<typeof github.getOctokit>,
   pullNumber: number,
-  payload: ReviewPayload,
+  body: string,
+  marker: string,
 ): Promise<number> {
   const { owner, repo } = ownerRepo();
+  const login = await authenticatedLogin(octokit);
+
+  const existing = await octokit.paginate(octokit.rest.issues.listComments, {
+    owner,
+    repo,
+    issue_number: pullNumber,
+    per_page: 100,
+  });
+
+  const previous = existing
+    .filter(
+      (comment) =>
+        comment.body?.includes(marker) && (login === undefined || comment.user?.login === login),
+    )
+    .pop();
+
+  if (previous) {
+    const { data } = await octokit.rest.issues.updateComment({
+      owner,
+      repo,
+      comment_id: previous.id,
+      body,
+    });
+    core.info(`Updated summary comment ${data.id}.`);
+    return data.id;
+  }
+
+  const { data } = await octokit.rest.issues.createComment({
+    owner,
+    repo,
+    issue_number: pullNumber,
+    body,
+  });
+
+  core.info(`Created summary comment ${data.id}.`);
+  return data.id;
+}
+
+/**
+ * Removes the inline comments this action left on a previous run and posts the
+ * current findings.
+ */
+export async function replaceInlineComments(
+  octokit: ReturnType<typeof github.getOctokit>,
+  pullNumber: number,
+  comments: ReviewComment[],
+  marker: string,
+  headSha: string,
+): Promise<number> {
+  const { owner, repo } = ownerRepo();
+  const login = await authenticatedLogin(octokit);
 
   try {
-    const login = await authenticatedLogin(octokit);
-    const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
+    const previous = await octokit.paginate(octokit.rest.pulls.listReviewComments, {
       owner,
       repo,
       pull_number: pullNumber,
       per_page: 100,
     });
 
-    const previous = [...reviews]
-      .reverse()
-      .find(
-        (review) =>
-          review.body?.includes(payload.marker) &&
-          (login === undefined || review.user?.login === login),
-      );
+    const stale = previous.filter(
+      (comment) =>
+        comment.body?.includes(marker) && (login === undefined || comment.user?.login === login),
+    );
 
-    if (previous) {
+    for (const comment of stale) {
       try {
-        const { data } = await octokit.rest.pulls.updateReview({
+        await octokit.rest.pulls.deleteReviewComment({
           owner,
           repo,
-          pull_number: pullNumber,
-          review_id: previous.id,
-          body: payload.body,
-          comments: payload.comments,
+          comment_id: comment.id,
         });
-        core.info(`Updated existing review ${data.id}.`);
-        return data.id;
       } catch (error) {
         core.warning(
-          `Could not update review ${previous.id} (${(error as Error).message}); creating a new one.`,
+          `Could not remove the previous inline comment ${comment.id}: ${(error as Error).message}`,
         );
       }
     }
+
+    if (stale.length > 0) {
+      core.info(`Removed ${stale.length} inline comment(s) from the previous run.`);
+    }
   } catch (error) {
-    core.debug(`Skipping review lookup: ${(error as Error).message}`);
+    core.warning(`Could not list previous inline comments: ${(error as Error).message}`);
   }
 
-  const { data } = await octokit.rest.pulls.createReview({
-    owner,
-    repo,
-    pull_number: pullNumber,
-    event: 'COMMENT',
-    body: payload.body,
-    comments: payload.comments,
-  });
+  for (const comment of comments) {
+    const payload: Parameters<typeof octokit.rest.pulls.createReviewComment>[0] = {
+      owner,
+      repo,
+      pull_number: pullNumber,
+      commit_id: headSha,
+      path: comment.path,
+      line: comment.line,
+      side: comment.side,
+      body: comment.body,
+    };
 
-  core.info(`Created review ${data.id}.`);
-  return data.id;
+    if (comment.start_line !== undefined) {
+      payload.start_line = comment.start_line;
+      payload.start_side = comment.start_side ?? 'RIGHT';
+    }
+
+    await octokit.rest.pulls.createReviewComment(payload);
+  }
+
+  core.info(`Posted ${comments.length} inline comment(s).`);
+  return comments.length;
 }
-
 /**
  * Maps model findings onto files and lines that GitHub actually accepts a
  * review comment on. Findings that cannot be anchored are returned separately
