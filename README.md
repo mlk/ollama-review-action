@@ -34,7 +34,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: mlk/ollama-review-action@v1
         with:
           model: glm-5.3

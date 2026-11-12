@@ -74,5 +74,5 @@ outputs:
     description: '"true" when the review contains a finding at or above the fail_on severity.'
 
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'
