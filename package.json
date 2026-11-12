@@ -1,0 +1,38 @@
+{
+  "name": "ollama-review-action",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GitHub Action that reviews pull requests using an Ollama Cloud model and posts inline review comments.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "ncc build src/main.ts -o dist --license licenses.txt",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "lint:fix": "eslint src test --fix",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"*.json\" \"*.yml\"",
+    "test": "tsc -p tsconfig.test.json && node --test lib/test/*.test.js",
+    "all": "npm run lint && npm run typecheck && npm run test && npm run build"
+  },
+  "keywords": [
+    "actions",
+    "ollama",
+    "code-review",
+    "pull-request"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@actions/github": "^6.0.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.2",
+    "@vercel/ncc": "^0.45.0",
+    "eslint": "^9.17.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1"
+  },
+  "overrides": {
+    "undici": "^6.29.1"
+  }
+}

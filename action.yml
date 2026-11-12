@@ -1,0 +1,78 @@
+name: 'Ollama PR Review'
+description: 'Reviews a pull request with an Ollama Cloud model and posts inline review comments plus a summary.'
+author: 'ollama-review-action'
+
+branding:
+  icon: 'eye'
+  color: 'purple'
+
+inputs:
+  model:
+    description: |
+      Ollama Cloud model used to generate the review (e.g. "glm-5.3", "kimi-k3.1-pro",
+      "deepseek-v4.1-flash"). Any model available to your Ollama account works.
+      Required - this action deliberately ships no default model.
+    required: false
+    default: ''
+  ollama_api_key:
+    description: |
+      Ollama API key. If omitted, the OLLAMA_API_KEY environment variable is used.
+      Never commit this value - pass it as a repository secret.
+    required: false
+    default: ''
+  ollama_host:
+    description: 'Base URL of the Ollama API. Use "https://ollama.com" for Ollama Cloud.'
+    required: false
+    default: 'https://ollama.com'
+  github-token:
+    description: 'Token used to read the pull request and post the review. Defaults to GITHUB_TOKEN.'
+    required: false
+    default: ''
+  prompt:
+    description: 'Extra review instructions appended to the default reviewer prompt.'
+    required: false
+    default: ''
+  max_diff_chars:
+    description: 'Maximum characters of diff sent to the model. Larger diffs are split across requests.'
+    required: false
+    default: '60000'
+  max_files:
+    description: 'Maximum number of changed files to review.'
+    required: false
+    default: '50'
+  exclude_paths:
+    description: 'Comma-separated glob patterns of files to skip, e.g. "**/*.lock,dist/**,docs/**".'
+    required: false
+    default: ''
+  reasoning_effort:
+    description: 'Thinking budget for reasoning models, e.g. "low", "medium", "high". Omit to use the model default.'
+    required: false
+    default: ''
+  temperature:
+    description: 'Sampling temperature for the review generation.'
+    required: false
+    default: '0.2'
+  fail_on:
+    description: |
+      Fail the job when a finding of this severity or worse is reported.
+      One of: none, nit, minor, major, critical, blocker. Defaults to "none" (never fail).
+    required: false
+    default: 'none'
+  post_review:
+    description: 'Post the review to the pull request. Set to "false" to only print the review to the job log.'
+    required: false
+    default: 'true'
+
+outputs:
+  summary:
+    description: 'The overall review summary produced by the model.'
+  findings_count:
+    description: 'Number of findings posted.'
+  review_id:
+    description: 'ID of the GitHub pull request review that was created or updated.'
+  failed:
+    description: '"true" when the review contains a finding at or above the fail_on severity.'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
