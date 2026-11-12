@@ -35934,50 +35934,140 @@ function wrappy (fn, cb) {
 
 /***/ }),
 
-/***/ 2973:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+/***/ 168:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.defaultDeps = void 0;
+exports.run = run;
+const core_1 = __nccwpck_require__(7484);
+const github_1 = __nccwpck_require__(3228);
+const config_1 = __nccwpck_require__(2973);
+const diff_1 = __nccwpck_require__(9952);
+const github_2 = __nccwpck_require__(9248);
+const ollama_1 = __nccwpck_require__(4501);
+const parse_1 = __nccwpck_require__(2828);
+const prompt_1 = __nccwpck_require__(705);
+const render_1 = __nccwpck_require__(7055);
+const select_1 = __nccwpck_require__(5955);
+const types_1 = __nccwpck_require__(6141);
+exports.defaultDeps = {
+    loadConfig: config_1.loadConfig,
+    getOctokit: (token) => (0, github_1.getOctokit)(token),
+    chat: (options, messages) => (0, ollama_1.chatCompletion)(options, messages),
+    info: core_1.info,
+    warning: core_1.warning,
+    debug: core_1.debug,
+    setOutput: core_1.setOutput,
+    setFailed: core_1.setFailed,
+    writeSummary: async (body) => {
+        await core_1.summary.addRaw(body).write();
+    },
+};
+async function run(deps = exports.defaultDeps) {
+    const config = deps.loadConfig();
+    const octokit = deps.getOctokit(config.token);
+    deps.info(`Reviewing pull request with model "${config.model}" via ${config.host}.`);
+    const pullRequest = await (0, github_2.getPullRequestContext)(octokit);
+    deps.info(`PR #${pullRequest.number}: ${pullRequest.title}`);
+    const files = await (0, github_2.fetchChangedFiles)(octokit, pullRequest.number);
+    if (files.length === 0) {
+        deps.info('No changed files to review.');
+        return;
     }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
+    const selected = (0, select_1.selectFiles)(files, config.excludePaths, config.maxFiles);
+    if (selected.length === 0) {
+        deps.info('Nothing to review after filtering.');
+        return;
+    }
+    const chunks = (0, diff_1.chunkDiffs)(selected, config.maxDiffChars);
+    deps.info(`Reviewing ${selected.length} file(s) in ${chunks.length} request(s).`);
+    const summaries = [];
+    const findings = [];
+    for (const [index, chunk] of chunks.entries()) {
+        const diffText = (0, diff_1.truncate)((0, diff_1.renderDiff)(chunk), config.maxDiffChars);
+        const userPrompt = (0, prompt_1.buildUserPrompt)(pullRequest, diffText, config.extraPrompt, chunk.length);
+        const response = await deps.chat({
+            host: config.host,
+            apiKey: config.apiKey,
+            model: config.model,
+            temperature: config.temperature,
+            ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
+        }, [
+            { role: 'system', content: prompt_1.SYSTEM_PROMPT },
+            { role: 'user', content: userPrompt },
+        ]);
+        try {
+            const review = (0, parse_1.parseReview)(response);
+            summaries.push(review.summary);
+            findings.push(...review.findings);
+        }
+        catch (error) {
+            deps.warning(`Could not parse the model response for chunk ${index + 1}: ${error.message}`);
+            deps.debug(response);
+        }
+    }
+    const summary = summaries.join('\n\n') || 'The model did not return a summary for this pull request.';
+    const { anchored, unanchored } = (0, github_2.anchorFindings)(findings, selected);
+    deps.info(`${anchored.length} anchored finding(s), ${unanchored.length} unanchored.`);
+    const body = (0, render_1.renderSummaryBody)(config.model, summary, anchored, unanchored);
+    const comments = anchored.map((finding) => {
+        const comment = {
+            path: finding.path,
+            line: finding.end_line ?? finding.line,
+            side: 'RIGHT',
+            body: (0, render_1.renderFindingBody)(finding),
         };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
+        if (finding.end_line && finding.end_line > finding.line) {
+            comment.start_line = finding.line;
+            comment.start_side = 'RIGHT';
+        }
+        return comment;
+    });
+    let summaryCommentId = '';
+    if (config.postReview) {
+        summaryCommentId = String(await (0, github_2.upsertSummaryComment)(octokit, pullRequest.number, body, render_1.MARKER_SUMMARY));
+        await (0, github_2.replaceInlineComments)(octokit, pullRequest.number, comments, render_1.MARKER_INLINE, pullRequest.headSha);
+    }
+    else {
+        deps.info('post_review is false - not posting to GitHub.');
+        deps.info(body);
+    }
+    try {
+        await deps.writeSummary(body);
+    }
+    catch (error) {
+        deps.warning(`Could not write the job summary: ${error.message}`);
+    }
+    deps.setOutput('summary', summary);
+    deps.setOutput('findings_count', anchored.length);
+    deps.setOutput('comment_id', summaryCommentId);
+    const worst = anchored
+        .map((finding) => finding.severity)
+        .sort((a, b) => types_1.SEVERITIES.indexOf(b) - types_1.SEVERITIES.indexOf(a))[0];
+    const failed = worst !== undefined && config.failOn !== 'none' && (0, types_1.meetsThreshold)(worst, config.failOn);
+    deps.setOutput('failed', failed ? 'true' : 'false');
+    if (failed) {
+        deps.setFailed(`The review found a ${worst} severity issue (fail_on=${config.failOn}).`);
+    }
+}
+
+
+/***/ }),
+
+/***/ 2973:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.loadConfig = loadConfig;
-const core = __importStar(__nccwpck_require__(7484));
+const core_1 = __nccwpck_require__(7484);
 const types_1 = __nccwpck_require__(6141);
 function getIntInput(name, fallback) {
-    const raw = core.getInput(name).trim();
+    const raw = (0, core_1.getInput)(name).trim();
     if (raw === '') {
         return fallback;
     }
@@ -35988,7 +36078,7 @@ function getIntInput(name, fallback) {
     return Math.floor(value);
 }
 function getBoolInput(name, fallback) {
-    const raw = core.getInput(name).trim();
+    const raw = (0, core_1.getInput)(name).trim();
     if (raw === '') {
         return fallback;
     }
@@ -36001,34 +36091,33 @@ function getBoolInput(name, fallback) {
     throw new Error(`Input "${name}" must be a boolean, got "${raw}".`);
 }
 function loadConfig() {
-    const model = core.getInput('model').trim();
+    const model = (0, core_1.getInput)('model').trim();
     if (model === '') {
         throw new Error('Input "model" is required. Pass a cloud model id, for example: ' +
             "with:\n  model: 'glm-5.3'");
     }
-    const apiKey = core.getInput('ollama_api_key').trim() || (process.env.OLLAMA_API_KEY ?? '').trim();
+    const apiKey = (0, core_1.getInput)('ollama_api_key').trim() || (process.env.OLLAMA_API_KEY ?? '').trim();
     if (apiKey === '') {
         throw new Error('No Ollama API key found. Set the OLLAMA_API_KEY environment variable or pass the ' +
             '"ollama_api_key" input. Create a key at https://ollama.com/settings/keys');
     }
-    const host = (core.getInput('ollama_host').trim() || 'https://ollama.com').replace(/\/+$/, '');
-    const token = core.getInput('github-token').trim() || (process.env.GITHUB_TOKEN ?? '').trim();
+    const host = ((0, core_1.getInput)('ollama_host').trim() || 'https://ollama.com').replace(/\/+$/, '');
+    const token = (0, core_1.getInput)('github-token').trim() || (process.env.GITHUB_TOKEN ?? '').trim();
     if (token === '') {
         throw new Error('No GitHub token found. Give the job "pull-requests: write" permission and make sure ' +
             'the action can see a token, for example by adding:\n' +
             '  env:\n    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}');
     }
-    const failOnRaw = core.getInput('fail_on').trim().toLowerCase() || 'none';
+    const failOnRaw = (0, core_1.getInput)('fail_on').trim().toLowerCase() || 'none';
     if (failOnRaw !== 'none' && !(0, types_1.isSeverity)(failOnRaw)) {
         throw new Error(`Input "fail_on" must be one of none, nit, minor, major, critical, blocker.`);
     }
-    const temperatureRaw = core.getInput('temperature').trim();
+    const temperatureRaw = (0, core_1.getInput)('temperature').trim();
     const temperature = temperatureRaw === '' ? 0.2 : Number(temperatureRaw);
     if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) {
         throw new Error(`Input "temperature" must be a number between 0 and 2, got "${temperatureRaw}".`);
     }
-    const excludePaths = core
-        .getInput('exclude_paths')
+    const excludePaths = (0, core_1.getInput)('exclude_paths')
         .split(',')
         .map((pattern) => pattern.trim())
         .filter((pattern) => pattern !== '');
@@ -36037,11 +36126,11 @@ function loadConfig() {
         apiKey,
         host,
         token,
-        extraPrompt: core.getInput('prompt').trim(),
+        extraPrompt: (0, core_1.getInput)('prompt').trim(),
         maxDiffChars: getIntInput('max_diff_chars', 60000),
         maxFiles: getIntInput('max_files', 50),
         excludePaths,
-        reasoningEffort: core.getInput('reasoning_effort').trim(),
+        reasoningEffort: (0, core_1.getInput)('reasoning_effort').trim(),
         temperature,
         failOn: failOnRaw,
         postReview: getBoolInput('post_review', true),
@@ -36234,63 +36323,29 @@ function truncate(text, maxChars) {
 /***/ }),
 
 /***/ 9248:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getPullRequestContext = getPullRequestContext;
 exports.fetchChangedFiles = fetchChangedFiles;
 exports.upsertSummaryComment = upsertSummaryComment;
 exports.replaceInlineComments = replaceInlineComments;
 exports.anchorFindings = anchorFindings;
-const core = __importStar(__nccwpck_require__(7484));
-const github = __importStar(__nccwpck_require__(3228));
+const core_1 = __nccwpck_require__(7484);
+const github_1 = __nccwpck_require__(3228);
 const diff_1 = __nccwpck_require__(9952);
-const { context } = github;
 function ownerRepo() {
-    const owner = context.repo.owner;
-    const repo = context.repo.repo;
+    const owner = github_1.context.repo.owner;
+    const repo = github_1.context.repo.repo;
     return { owner, repo };
 }
 async function getPullRequestContext(octokit) {
     const { owner, repo } = ownerRepo();
-    const payload = context.payload;
+    const payload = github_1.context.payload;
     const pullRequest = payload.pull_request;
-    let number = context.issue.number;
+    let number = github_1.context.issue.number;
     if (!number) {
         const ref = process.env.GITHUB_REF ?? '';
         const match = /refs\/pull\/(\d+)\//.exec(ref);
@@ -36376,7 +36431,7 @@ async function upsertSummaryComment(octokit, pullNumber, body, marker) {
             comment_id: previous.id,
             body,
         });
-        core.info(`Updated summary comment ${data.id}.`);
+        (0, core_1.info)(`Updated summary comment ${data.id}.`);
         return data.id;
     }
     const { data } = await octokit.rest.issues.createComment({
@@ -36385,7 +36440,7 @@ async function upsertSummaryComment(octokit, pullNumber, body, marker) {
         issue_number: pullNumber,
         body,
     });
-    core.info(`Created summary comment ${data.id}.`);
+    (0, core_1.info)(`Created summary comment ${data.id}.`);
     return data.id;
 }
 /**
@@ -36412,15 +36467,15 @@ async function replaceInlineComments(octokit, pullNumber, comments, marker, head
                 });
             }
             catch (error) {
-                core.warning(`Could not remove the previous inline comment ${comment.id}: ${error.message}`);
+                (0, core_1.warning)(`Could not remove the previous inline comment ${comment.id}: ${error.message}`);
             }
         }
         if (stale.length > 0) {
-            core.info(`Removed ${stale.length} inline comment(s) from the previous run.`);
+            (0, core_1.info)(`Removed ${stale.length} inline comment(s) from the previous run.`);
         }
     }
     catch (error) {
-        core.warning(`Could not list previous inline comments: ${error.message}`);
+        (0, core_1.warning)(`Could not list previous inline comments: ${error.message}`);
     }
     for (const comment of comments) {
         const payload = {
@@ -36439,7 +36494,7 @@ async function replaceInlineComments(octokit, pullNumber, comments, marker, head
         }
         await octokit.rest.pulls.createReviewComment(payload);
     }
-    core.info(`Posted ${comments.length} inline comment(s).`);
+    (0, core_1.info)(`Posted ${comments.length} inline comment(s).`);
     return comments.length;
 }
 /**
@@ -36485,290 +36540,17 @@ function anchorFindings(findings, diffs) {
 
 /***/ }),
 
-/***/ 1730:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-const core = __importStar(__nccwpck_require__(7484));
-const github = __importStar(__nccwpck_require__(3228));
-const config_1 = __nccwpck_require__(2973);
-const diff_1 = __nccwpck_require__(9952);
-const github_1 = __nccwpck_require__(9248);
-const ollama_1 = __nccwpck_require__(4501);
-const parse_1 = __nccwpck_require__(2828);
-const prompt_1 = __nccwpck_require__(705);
-const types_1 = __nccwpck_require__(6141);
-const { getOctokit } = github;
-const MARKER_SUMMARY = '<!-- ollama-review-action:summary';
-const MARKER_INLINE = '<!-- ollama-review-action:inline -->';
-function severityEmoji(severity) {
-    switch (severity) {
-        case 'blocker':
-            return '\u{1F534}';
-        case 'critical':
-            return '\u{1F7E0}';
-        case 'major':
-            return '\u{1F7E1}';
-        case 'minor':
-            return '\u{1F535}';
-        default:
-            return '\u{26AA}';
-    }
-}
-function isValidSuggestion(finding) {
-    if (!finding.suggestion) {
-        return false;
-    }
-    const lines = finding.suggestion.replace(/\n$/, '').split('\n');
-    const expected = finding.end_line ? finding.end_line - finding.line + 1 : 1;
-    return lines.length === expected && lines.every((line) => line.trim() !== '');
-}
-function renderFindingBody(finding) {
-    const parts = [];
-    parts.push(`**${severityEmoji(finding.severity)} \`${finding.severity}\` - ${finding.title}**`);
-    parts.push('');
-    if (finding.body) {
-        parts.push(finding.body);
-        parts.push('');
-    }
-    if (finding.suggestion) {
-        if (isValidSuggestion(finding)) {
-            parts.push('```suggest');
-            parts.push(finding.suggestion.replace(/\n$/, ''));
-            parts.push('```');
-        }
-        else {
-            parts.push('Suggested change:');
-            parts.push('');
-            parts.push('```');
-            parts.push(finding.suggestion.replace(/\n$/, ''));
-            parts.push('```');
-        }
-        parts.push('');
-    }
-    parts.push(MARKER_INLINE);
-    return parts.join('\n').trimEnd();
-}
-function renderSummaryBody(model, summary, findings, unanchored) {
-    const lines = [];
-    lines.push(`${MARKER_SUMMARY}:model=${model} -->`);
-    lines.push('');
-    lines.push('## Ollama review');
-    lines.push('');
-    lines.push(summary);
-    lines.push('');
-    if (unanchored.length > 0) {
-        lines.push('### Other observations');
-        lines.push('');
-        for (const finding of unanchored) {
-            lines.push(`- **\`${finding.severity}\`** ${finding.title} - \`${finding.path}\` (line ${finding.line})`);
-            if (finding.body) {
-                lines.push(`  ${finding.body.replace(/\n+/g, ' ')}`);
-            }
-        }
-        lines.push('');
-    }
-    lines.push(`<sub>Reviewed with \`${model}\` - ${findings.length} finding${findings.length === 1 ? '' : 's'}.</sub>`);
-    return lines.join('\n');
-}
-function selectFiles(diffs, excludePaths, maxFiles) {
-    const selected = [];
-    for (const diff of diffs) {
-        if (diff.status === 'removed') {
-            continue;
-        }
-        if (excludePaths.length > 0 && (0, diff_1.matchesAnyGlob)(diff.path, excludePaths)) {
-            core.info(`Skipping excluded path: ${diff.path}`);
-            continue;
-        }
-        if (diff.truncated) {
-            core.info(`Skipping ${diff.path}: GitHub did not return a patch for it.`);
-            continue;
-        }
-        if (diff.commentableLines.length === 0) {
-            core.info(`Skipping ${diff.path}: no reviewable lines in the diff.`);
-            continue;
-        }
-        selected.push(diff);
-    }
-    if (selected.length > maxFiles) {
-        core.warning(`Reviewing the first ${maxFiles} of ${selected.length} changed files (input "max_files").`);
-        return selected.slice(0, maxFiles);
-    }
-    return selected;
-}
-async function run() {
-    const config = (0, config_1.loadConfig)();
-    const octokit = getOctokit(config.token);
-    core.info(`Reviewing pull request with model "${config.model}" via ${config.host}.`);
-    const pullRequest = await (0, github_1.getPullRequestContext)(octokit);
-    core.info(`PR #${pullRequest.number}: ${pullRequest.title}`);
-    const files = await (0, github_1.fetchChangedFiles)(octokit, pullRequest.number);
-    if (files.length === 0) {
-        core.info('No changed files to review.');
-        return;
-    }
-    const selected = selectFiles(files, config.excludePaths, config.maxFiles);
-    if (selected.length === 0) {
-        core.info('Nothing to review after filtering.');
-        return;
-    }
-    const chunks = (0, diff_1.chunkDiffs)(selected, config.maxDiffChars);
-    core.info(`Reviewing ${selected.length} file(s) in ${chunks.length} request(s).`);
-    const summaries = [];
-    const findings = [];
-    for (const [index, chunk] of chunks.entries()) {
-        const diffText = (0, diff_1.truncate)((0, diff_1.renderDiff)(chunk), config.maxDiffChars);
-        const userPrompt = (0, prompt_1.buildUserPrompt)(pullRequest, diffText, config.extraPrompt, chunk.length);
-        const response = await (0, ollama_1.chatCompletion)({
-            host: config.host,
-            apiKey: config.apiKey,
-            model: config.model,
-            temperature: config.temperature,
-            ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
-        }, [
-            { role: 'system', content: prompt_1.SYSTEM_PROMPT },
-            { role: 'user', content: userPrompt },
-        ]);
-        try {
-            const review = (0, parse_1.parseReview)(response);
-            summaries.push(review.summary);
-            findings.push(...review.findings);
-        }
-        catch (error) {
-            core.warning(`Could not parse the model response for chunk ${index + 1}: ${error.message}`);
-            core.debug(response);
-        }
-    }
-    const summary = summaries.join('\n\n') || 'The model did not return a summary for this pull request.';
-    const { anchored, unanchored } = (0, github_1.anchorFindings)(findings, selected);
-    core.info(`${anchored.length} anchored finding(s), ${unanchored.length} unanchored.`);
-    const body = renderSummaryBody(config.model, summary, anchored, unanchored);
-    const comments = anchored.map((finding) => {
-        const comment = {
-            path: finding.path,
-            line: finding.end_line ?? finding.line,
-            side: 'RIGHT',
-            body: renderFindingBody(finding),
-        };
-        if (finding.end_line && finding.end_line > finding.line) {
-            comment.start_line = finding.line;
-            comment.start_side = 'RIGHT';
-        }
-        return comment;
-    });
-    let summaryCommentId = '';
-    if (config.postReview) {
-        summaryCommentId = String(await (0, github_1.upsertSummaryComment)(octokit, pullRequest.number, body, MARKER_SUMMARY));
-        await (0, github_1.replaceInlineComments)(octokit, pullRequest.number, comments, MARKER_INLINE, pullRequest.headSha);
-    }
-    else {
-        core.info('post_review is false - not posting to GitHub.');
-        core.info(body);
-    }
-    try {
-        await core.summary.addRaw(body).write();
-    }
-    catch (error) {
-        core.warning(`Could not write the job summary: ${error.message}`);
-    }
-    core.setOutput('summary', summary);
-    core.setOutput('findings_count', anchored.length);
-    core.setOutput('comment_id', summaryCommentId);
-    const worst = anchored
-        .map((finding) => finding.severity)
-        .sort((a, b) => types_1.SEVERITIES.indexOf(b) - types_1.SEVERITIES.indexOf(a))[0];
-    const failed = worst !== undefined && config.failOn !== 'none' && (0, types_1.meetsThreshold)(worst, config.failOn);
-    core.setOutput('failed', failed ? 'true' : 'false');
-    if (failed) {
-        core.setFailed(`The review found a ${worst} severity issue (fail_on=${config.failOn}).`);
-    }
-}
-run().catch((error) => {
-    core.setFailed(error instanceof Error ? error.message : String(error));
-});
-
-
-/***/ }),
-
 /***/ 4501:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.chatCompletion = chatCompletion;
-const core = __importStar(__nccwpck_require__(7484));
+const core_1 = __nccwpck_require__(7484);
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_RETRIES = 2;
+const DEFAULT_RETRY_DELAY_MS = 2_000;
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -36783,6 +36565,7 @@ async function readError(response) {
 async function chatCompletion(options, messages, useJsonMode = true) {
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const retries = options.retries ?? DEFAULT_RETRIES;
+    const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
     const endpoint = `${options.host}/v1/chat/completions`;
     const body = {
         model: options.model,
@@ -36798,8 +36581,9 @@ async function chatCompletion(options, messages, useJsonMode = true) {
     }
     let lastError;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
+        let response;
         try {
-            const response = await fetch(endpoint, {
+            response = await fetch(endpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -36808,54 +36592,55 @@ async function chatCompletion(options, messages, useJsonMode = true) {
                 body: JSON.stringify(body),
                 signal: AbortSignal.timeout(timeoutMs),
             });
-            if (!response.ok) {
-                const detail = await readError(response);
-                const error = new Error(`Ollama request failed: ${detail}`);
-                // 400 means the request itself is wrong - retrying will not help.
-                if (response.status === 400 && useJsonMode && /response_format|json/i.test(detail)) {
-                    // The model or host does not support JSON mode - fall back to plain text.
-                    return chatCompletion(options, messages, false);
-                }
-                // The direct cloud API uses plain ids ("glm-5.3") while a local Ollama
-                // server uses the ":cloud" suffix ("glm-5.3:cloud"). Try the other form
-                // before giving up.
-                if ((response.status === 404 || response.status === 400) &&
-                    !options.model.endsWith(':cloud') &&
-                    /model|not found|does not exist/i.test(detail)) {
-                    core.warning(`Model "${options.model}" was not found, retrying as "${options.model}:cloud".`);
-                    return chatCompletion({ ...options, model: `${options.model}:cloud` }, messages, useJsonMode);
-                }
-                if (response.status === 429 || response.status >= 500) {
-                    lastError = error;
-                    await sleep(2 ** attempt * 2000);
-                    continue;
-                }
-                throw error;
-            }
-            const payload = (await response.json());
-            const message = payload.choices?.[0]?.message;
-            const content = message?.content?.trim();
-            if (!content) {
-                throw new Error('Ollama returned an empty response.');
-            }
-            return content;
         }
         catch (error) {
+            // A network error or a timeout. These are worth retrying.
             const err = error instanceof Error ? error : new Error(String(error));
-            if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-                lastError = new Error(`Ollama request timed out after ${timeoutMs}ms.`);
-            }
-            else if (err.message.includes('Ollama request failed: 400')) {
-                throw err;
-            }
-            else {
-                lastError = err;
-            }
+            lastError =
+                err.name === 'TimeoutError' || err.name === 'AbortError'
+                    ? new Error(`Ollama request timed out after ${timeoutMs}ms.`)
+                    : err;
             if (attempt === retries) {
                 break;
             }
-            await sleep(2 ** attempt * 2000);
+            await sleep(2 ** attempt * retryDelayMs);
+            continue;
         }
+        if (!response.ok) {
+            const detail = await readError(response);
+            // 400 means the request itself is wrong - retrying will not help.
+            if (response.status === 400 && useJsonMode && /response_format|json/i.test(detail)) {
+                // The model or host does not support JSON mode - fall back to plain text.
+                return chatCompletion(options, messages, false);
+            }
+            // The direct cloud API uses plain ids ("glm-5.3") while a local Ollama
+            // server uses the ":cloud" suffix ("glm-5.3:cloud"). Try the other form
+            // before giving up.
+            if ((response.status === 404 || response.status === 400) &&
+                !options.model.endsWith(':cloud') &&
+                /model|not found|does not exist/i.test(detail)) {
+                (0, core_1.warning)(`Model "${options.model}" was not found, retrying as "${options.model}:cloud".`);
+                return chatCompletion({ ...options, model: `${options.model}:cloud` }, messages, useJsonMode);
+            }
+            // Only rate limits and server errors are worth another attempt. A 401 or a
+            // 404 will fail the same way every time, so fail immediately.
+            if (response.status !== 429 && response.status < 500) {
+                throw new Error(`Ollama request failed: ${detail}`);
+            }
+            lastError = new Error(`Ollama request failed: ${detail}`);
+            if (attempt === retries) {
+                break;
+            }
+            await sleep(2 ** attempt * retryDelayMs);
+            continue;
+        }
+        const payload = (await response.json());
+        const message = payload.choices?.[0]?.message;
+        const content = message?.content?.trim();
+        if (!content) {
+            throw new Error('Ollama returned an empty response.');
+        }
+        return content;
     }
     throw lastError ?? new Error('Ollama request failed.');
 }
@@ -37109,6 +36894,141 @@ function buildUserPrompt(context, diffText, extraPrompt, fileCount) {
         'If there are no problems, return {"summary": "...", "findings": []}.',
     ].join('\n'));
     return sections.join('\n\n---\n\n');
+}
+
+
+/***/ }),
+
+/***/ 7055:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.MARKER_INLINE = exports.MARKER_SUMMARY = void 0;
+exports.severityEmoji = severityEmoji;
+exports.isValidSuggestion = isValidSuggestion;
+exports.renderFindingBody = renderFindingBody;
+exports.renderSummaryBody = renderSummaryBody;
+exports.MARKER_SUMMARY = '<!-- ollama-review-action:summary';
+exports.MARKER_INLINE = '<!-- ollama-review-action:inline -->';
+function severityEmoji(severity) {
+    switch (severity) {
+        case 'blocker':
+            return '\u{1F534}';
+        case 'critical':
+            return '\u{1F7E0}';
+        case 'major':
+            return '\u{1F7E1}';
+        case 'minor':
+            return '\u{1F535}';
+        default:
+            return '\u{26AA}';
+    }
+}
+/**
+ * A GitHub suggestion block replaces the commented line range, so it is only
+ * valid when the number of suggested lines matches that range exactly.
+ */
+function isValidSuggestion(finding) {
+    if (!finding.suggestion) {
+        return false;
+    }
+    const lines = finding.suggestion.replace(/\n$/, '').split('\n');
+    const expected = finding.end_line ? finding.end_line - finding.line + 1 : 1;
+    return lines.length === expected && lines.every((line) => line.trim() !== '');
+}
+function renderFindingBody(finding) {
+    const parts = [];
+    parts.push(`**${severityEmoji(finding.severity)} \`${finding.severity}\` - ${finding.title}**`);
+    parts.push('');
+    if (finding.body) {
+        parts.push(finding.body);
+        parts.push('');
+    }
+    if (finding.suggestion) {
+        if (isValidSuggestion(finding)) {
+            parts.push('```suggest');
+            parts.push(finding.suggestion.replace(/\n$/, ''));
+            parts.push('```');
+        }
+        else {
+            parts.push('Suggested change:');
+            parts.push('');
+            parts.push('```');
+            parts.push(finding.suggestion.replace(/\n$/, ''));
+            parts.push('```');
+        }
+        parts.push('');
+    }
+    parts.push(exports.MARKER_INLINE);
+    return parts.join('\n').trimEnd();
+}
+function renderSummaryBody(model, summary, findings, unanchored) {
+    const lines = [];
+    lines.push(`${exports.MARKER_SUMMARY}:model=${model} -->`);
+    lines.push('');
+    lines.push('## Ollama review');
+    lines.push('');
+    lines.push(summary);
+    lines.push('');
+    if (unanchored.length > 0) {
+        lines.push('### Other observations');
+        lines.push('');
+        for (const finding of unanchored) {
+            lines.push(`- **\`${finding.severity}\`** ${finding.title} - \`${finding.path}\` (line ${finding.line})`);
+            if (finding.body) {
+                lines.push(`  ${finding.body.replace(/\n+/g, ' ')}`);
+            }
+        }
+        lines.push('');
+    }
+    lines.push(`<sub>Reviewed with \`${model}\` - ${findings.length} finding${findings.length === 1 ? '' : 's'}.</sub>`);
+    return lines.join('\n');
+}
+
+
+/***/ }),
+
+/***/ 5955:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.selectFiles = selectFiles;
+const core_1 = __nccwpck_require__(7484);
+const diff_1 = __nccwpck_require__(9952);
+/**
+ * Picks the files worth sending to the model: not deleted, not excluded by
+ * pattern, and not missing a patch (GitHub omits patches for very large
+ * diffs, and there is nothing to review in those files).
+ */
+function selectFiles(diffs, excludePaths, maxFiles) {
+    const selected = [];
+    for (const diff of diffs) {
+        if (diff.status === 'removed') {
+            continue;
+        }
+        if (excludePaths.length > 0 && (0, diff_1.matchesAnyGlob)(diff.path, excludePaths)) {
+            (0, core_1.info)(`Skipping excluded path: ${diff.path}`);
+            continue;
+        }
+        if (diff.truncated) {
+            (0, core_1.info)(`Skipping ${diff.path}: GitHub did not return a patch for it.`);
+            continue;
+        }
+        if (diff.commentableLines.length === 0) {
+            (0, core_1.info)(`Skipping ${diff.path}: no reviewable lines in the diff.`);
+            continue;
+        }
+        selected.push(diff);
+    }
+    if (selected.length > maxFiles) {
+        (0, core_1.warning)(`Reviewing the first ${maxFiles} of ${selected.length} changed files (input "max_files").`);
+        return selected.slice(0, maxFiles);
+    }
+    return selected;
 }
 
 
@@ -37444,12 +37364,21 @@ module.exports = require("util");
 /******/ 	if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = __dirname + "/";
 /******/ 	
 /************************************************************************/
-/******/ 	
-/******/ 	// startup
-/******/ 	// Load entry module and return exports
-/******/ 	// This entry module is referenced by other modules so it can't be inlined
-/******/ 	var __webpack_exports__ = __nccwpck_require__(1730);
-/******/ 	module.exports = __webpack_exports__;
-/******/ 	
+var __webpack_exports__ = {};
+// This entry need to be wrapped in an IIFE because it need to be in strict mode.
+(() => {
+"use strict";
+var exports = __webpack_exports__;
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const core_1 = __nccwpck_require__(7484);
+const app_1 = __nccwpck_require__(168);
+(0, app_1.run)().catch((error) => {
+    (0, core_1.setFailed)(error instanceof Error ? error.message : String(error));
+});
+
+})();
+
+module.exports = __webpack_exports__;
 /******/ })()
 ;

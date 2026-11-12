@@ -1,4 +1,4 @@
-import * as core from '@actions/core';
+import { getInput } from '@actions/core';
 
 import { isSeverity, Severity } from './types';
 
@@ -18,7 +18,7 @@ export interface Config {
 }
 
 function getIntInput(name: string, fallback: number): number {
-  const raw = core.getInput(name).trim();
+  const raw = getInput(name).trim();
   if (raw === '') {
     return fallback;
   }
@@ -30,7 +30,7 @@ function getIntInput(name: string, fallback: number): number {
 }
 
 function getBoolInput(name: string, fallback: boolean): boolean {
-  const raw = core.getInput(name).trim();
+  const raw = getInput(name).trim();
   if (raw === '') {
     return fallback;
   }
@@ -44,7 +44,7 @@ function getBoolInput(name: string, fallback: boolean): boolean {
 }
 
 export function loadConfig(): Config {
-  const model = core.getInput('model').trim();
+  const model = getInput('model').trim();
   if (model === '') {
     throw new Error(
       'Input "model" is required. Pass a cloud model id, for example: ' +
@@ -52,7 +52,7 @@ export function loadConfig(): Config {
     );
   }
 
-  const apiKey = core.getInput('ollama_api_key').trim() || (process.env.OLLAMA_API_KEY ?? '').trim();
+  const apiKey = getInput('ollama_api_key').trim() || (process.env.OLLAMA_API_KEY ?? '').trim();
   if (apiKey === '') {
     throw new Error(
       'No Ollama API key found. Set the OLLAMA_API_KEY environment variable or pass the ' +
@@ -60,9 +60,9 @@ export function loadConfig(): Config {
     );
   }
 
-  const host = (core.getInput('ollama_host').trim() || 'https://ollama.com').replace(/\/+$/, '');
+  const host = (getInput('ollama_host').trim() || 'https://ollama.com').replace(/\/+$/, '');
 
-  const token = core.getInput('github-token').trim() || (process.env.GITHUB_TOKEN ?? '').trim();
+  const token = getInput('github-token').trim() || (process.env.GITHUB_TOKEN ?? '').trim();
   if (token === '') {
     throw new Error(
       'No GitHub token found. Give the job "pull-requests: write" permission and make sure ' +
@@ -71,33 +71,32 @@ export function loadConfig(): Config {
     );
   }
 
-  const failOnRaw = core.getInput('fail_on').trim().toLowerCase() || 'none';
+  const failOnRaw = getInput('fail_on').trim().toLowerCase() || 'none';
   if (failOnRaw !== 'none' && !isSeverity(failOnRaw)) {
     throw new Error(`Input "fail_on" must be one of none, nit, minor, major, critical, blocker.`);
   }
 
-  const temperatureRaw = core.getInput('temperature').trim();
+  const temperatureRaw = getInput('temperature').trim();
   const temperature = temperatureRaw === '' ? 0.2 : Number(temperatureRaw);
   if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) {
     throw new Error(`Input "temperature" must be a number between 0 and 2, got "${temperatureRaw}".`);
   }
 
-  const excludePaths = core
-    .getInput('exclude_paths')
+  const excludePaths = getInput('exclude_paths')
     .split(',')
-    .map((pattern) => pattern.trim())
-    .filter((pattern) => pattern !== '');
+    .map((pattern: string) => pattern.trim())
+    .filter((pattern: string) => pattern !== '');
 
   return {
     model,
     apiKey,
     host,
     token,
-    extraPrompt: core.getInput('prompt').trim(),
+    extraPrompt: getInput('prompt').trim(),
     maxDiffChars: getIntInput('max_diff_chars', 60000),
     maxFiles: getIntInput('max_files', 50),
     excludePaths,
-    reasoningEffort: core.getInput('reasoning_effort').trim(),
+    reasoningEffort: getInput('reasoning_effort').trim(),
     temperature,
     failOn: failOnRaw as Severity | 'none',
     postReview: getBoolInput('post_review', true),

@@ -1,10 +1,8 @@
-import * as core from '@actions/core';
-import * as github from '@actions/github';
+import { info, warning } from '@actions/core';
+import { context, getOctokit } from '@actions/github';
 
 import { buildFileDiff } from './diff';
 import { FileDiff, Finding, PullRequestContext } from './types';
-
-const { context } = github;
 
 export interface ReviewComment {
   path: string;
@@ -30,7 +28,7 @@ interface PayloadPullRequest {
 }
 
 export async function getPullRequestContext(
-  octokit: ReturnType<typeof github.getOctokit>,
+  octokit: ReturnType<typeof getOctokit>,
 ): Promise<PullRequestContext> {
   const { owner, repo } = ownerRepo();
   const payload = context.payload as Record<string, unknown>;
@@ -86,7 +84,7 @@ export interface ChangedFile {
 }
 
 export async function fetchChangedFiles(
-  octokit: ReturnType<typeof github.getOctokit>,
+  octokit: ReturnType<typeof getOctokit>,
   pullNumber: number,
 ): Promise<FileDiff[]> {
   const { owner, repo } = ownerRepo();
@@ -111,7 +109,7 @@ export async function fetchChangedFiles(
 }
 
 async function authenticatedLogin(
-  octokit: ReturnType<typeof github.getOctokit>,
+  octokit: ReturnType<typeof getOctokit>,
 ): Promise<string | undefined> {
   try {
     const { data } = await octokit.rest.users.getAuthenticated();
@@ -129,7 +127,7 @@ async function authenticatedLogin(
  * when the pull request is pushed to again.
  */
 export async function upsertSummaryComment(
-  octokit: ReturnType<typeof github.getOctokit>,
+  octokit: ReturnType<typeof getOctokit>,
   pullNumber: number,
   body: string,
   marker: string,
@@ -158,7 +156,7 @@ export async function upsertSummaryComment(
       comment_id: previous.id,
       body,
     });
-    core.info(`Updated summary comment ${data.id}.`);
+    info(`Updated summary comment ${data.id}.`);
     return data.id;
   }
 
@@ -169,7 +167,7 @@ export async function upsertSummaryComment(
     body,
   });
 
-  core.info(`Created summary comment ${data.id}.`);
+  info(`Created summary comment ${data.id}.`);
   return data.id;
 }
 
@@ -178,7 +176,7 @@ export async function upsertSummaryComment(
  * current findings.
  */
 export async function replaceInlineComments(
-  octokit: ReturnType<typeof github.getOctokit>,
+  octokit: ReturnType<typeof getOctokit>,
   pullNumber: number,
   comments: ReviewComment[],
   marker: string,
@@ -208,17 +206,17 @@ export async function replaceInlineComments(
           comment_id: comment.id,
         });
       } catch (error) {
-        core.warning(
+        warning(
           `Could not remove the previous inline comment ${comment.id}: ${(error as Error).message}`,
         );
       }
     }
 
     if (stale.length > 0) {
-      core.info(`Removed ${stale.length} inline comment(s) from the previous run.`);
+      info(`Removed ${stale.length} inline comment(s) from the previous run.`);
     }
   } catch (error) {
-    core.warning(`Could not list previous inline comments: ${(error as Error).message}`);
+    warning(`Could not list previous inline comments: ${(error as Error).message}`);
   }
 
   for (const comment of comments) {
@@ -241,7 +239,7 @@ export async function replaceInlineComments(
     await octokit.rest.pulls.createReviewComment(payload);
   }
 
-  core.info(`Posted ${comments.length} inline comment(s).`);
+  info(`Posted ${comments.length} inline comment(s).`);
   return comments.length;
 }
 /**

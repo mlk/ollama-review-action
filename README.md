@@ -177,10 +177,13 @@ npm install
 npm run lint        # eslint
 npm run typecheck   # tsc --noEmit
 npm test            # unit tests
+npm run coverage    # unit tests with a coverage report and thresholds
 npm run build       # bundle to dist/index.js with ncc
 ```
 
 `dist/` is committed because GitHub Actions runs the bundled JavaScript directly. After changing anything under `src/`, run `npm run build` and commit the updated bundle - CI fails if `dist/` is out of date.
+
+`npm run coverage` enforces a floor of 85% line coverage, 78% branch coverage and 85% function coverage over `src/`, so a change that quietly drops the tests fails the build. `src/main.ts` is excluded because it is only the entrypoint that calls `run()` and reports failures.
 
 ### Cutting a release
 
