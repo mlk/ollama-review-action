@@ -19,3 +19,8 @@ export async function chargeCard(total: number, card: { token: string }): Promis
   }
   throw new Error('charge failed');
 }
+
+export async function applyCoupon(code: string, price: number): Promise<number> {
+  const coupon = await db.findCoupon(code);
+  return price - coupon.amount;
+}
