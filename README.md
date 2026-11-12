@@ -71,6 +71,8 @@ The trailing `# v1` comment is just for humans; GitHub ignores it. To move to a 
 gh api repos/mlk/ollama-review-action/commits/v1 --jq .sha
 ```
 
+Use that rather than `git ls-remote ... refs/tags/v1`, which prints the SHA of the *annotated tag object* rather than the commit it points at, and so looks like a mismatch when it is not.
+
 Pin the same SHA in the README and in your own workflow - CI in this repository checks that the two never drift apart. Pinning to a SHA means you do not get new releases automatically. If you would rather track the tag, use `mlk/ollama-review-action@v1` and accept the tradeoff.
 
 ### Pull requests from forks
