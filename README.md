@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: mlk/ollama-review-action@0c514743294d1f8e0364f93ecfe673fd8baa4c02 # v1
+      - uses: mlk/ollama-review-action@c91bafdc4d041811b078750ad3bd4ffc753efbd8 # v1
         with:
           model: glm-5.3
         env:
@@ -122,7 +122,7 @@ The action needs `pull-requests: write` and your `OLLAMA_API_KEY`, so it is wort
 ## Blocking a pull request
 
 ```yaml
-- uses: mlk/ollama-review-action@0c514743294d1f8e0364f93ecfe673fd8baa4c02 # v1
+- uses: mlk/ollama-review-action@c91bafdc4d041811b078750ad3bd4ffc753efbd8 # v1
   with:
     model: glm-5.3
     fail_on: critical
@@ -137,7 +137,7 @@ The review is always posted first; the job fails afterwards if the model reporte
 Add repository-specific instructions with the `prompt` input:
 
 ```yaml
-- uses: mlk/ollama-review-action@0c514743294d1f8e0364f93ecfe673fd8baa4c02 # v1
+- uses: mlk/ollama-review-action@c91bafdc4d041811b078750ad3bd4ffc753efbd8 # v1
   with:
     model: glm-5.3
     prompt: |
