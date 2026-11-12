@@ -13,6 +13,7 @@ Look for:
 
 Rules:
 - Only report problems you can point at in the diff. Never speculate about code you cannot see.
+- Do not assert facts the diff does not show. Whether a library, model, service, API or version exists is not something the diff can tell you, and you cannot check. If it matters, raise it as a question ("confirm that X is available in the backend") rather than a claim. A confident wrong fact is worse than a missing finding.
 - Do not report formatting, import ordering, naming preferences, or anything a linter/formatter already handles.
 - Do not report the same problem twice. One finding per distinct issue.
 - If the diff is fine, return no findings. An honest short review beats a padded one.

@@ -36,6 +36,9 @@ concurrency:
 
 jobs:
   review:
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -48,11 +51,12 @@ jobs:
 
 There is deliberately no `actions/checkout` step: the action reads the diff through the GitHub API and never touches the working tree, so checking out the repository would download it for nothing on every push. Add a checkout only if you extend the action to read files from the repository.
 
-The four details in that snippet are worth keeping:
+The details in that snippet are worth keeping:
 
 | Line | Why |
 | --- | --- |
 | `permissions` | The action only needs to read the repo and write to the pull request. Anything broader is a risk if the action is ever compromised. |
+| `if` | Skips draft pull requests (every push to a draft would otherwise spend a model call) and pull requests from forks (secrets are withheld there, so the action would fail with no API key). See [Pull requests from forks](#pull-requests-from-forks) to review those too. |
 | `concurrency` | `synchronize` fires on every push. Without a group, rapid pushes start overlapping runs that post reviews on top of each other. `cancel-in-progress` keeps only the newest one. |
 | `timeout-minutes` | The runner default is 6 hours. A stuck model call should fail in minutes, not hold a runner. |
 | Commit SHA pin | See below. |
@@ -71,15 +75,23 @@ Pin the same SHA in the README and in your own workflow - CI in this repository 
 
 ### Pull requests from forks
 
-Workflows triggered by `pull_request` from a fork get a read-only token, so posting the review fails. Use `pull_request_target` if you review fork PRs:
+The example above skips pull requests from forks, because GitHub withholds repository secrets there - the action would start up with no API key and fail. To review them as well, switch the trigger to `pull_request_target` and drop the repository check from the `if` condition:
 
 ```yaml
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
 ```
 
-This is safe here because the action never checks out or executes code from the pull request. It only reads the diff through the API.
+This is safe here because the action never checks out or executes code from the pull request. It only reads the diff through the API. Note that `pull_request_target` runs with the secrets of the base repository, so treat it as you would any other workflow that holds your API key.
+
+### Before you trust it with a secret
+
+The action needs `pull-requests: write` and your `OLLAMA_API_KEY`, so it is worth reading the source before you wire it into a repository you care about. It is a few hundred lines in `src/`, and the bundled `dist/index.js` is the exact artifact that runs - the SHA pin in the example is what makes that review meaningful, since a tag could be repointed later.
 
 ## Inputs
 
