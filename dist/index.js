@@ -36014,8 +36014,9 @@ function loadConfig() {
     const host = (core.getInput('ollama_host').trim() || 'https://ollama.com').replace(/\/+$/, '');
     const token = core.getInput('github-token').trim() || (process.env.GITHUB_TOKEN ?? '').trim();
     if (token === '') {
-        throw new Error('No GitHub token found. Give the job "pull-requests: write" permission and pass ' +
-            'GITHUB_TOKEN: ${{ github.token }}.');
+        throw new Error('No GitHub token found. Give the job "pull-requests: write" permission and make sure ' +
+            'the action can see a token, for example by adding:\n' +
+            '  env:\n    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}');
     }
     const failOnRaw = core.getInput('fail_on').trim().toLowerCase() || 'none';
     if (failOnRaw !== 'none' && !(0, types_1.isSeverity)(failOnRaw)) {

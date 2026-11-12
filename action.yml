@@ -25,9 +25,9 @@ inputs:
     required: false
     default: 'https://ollama.com'
   github-token:
-    description: 'Token used to read the pull request and post the review. Defaults to GITHUB_TOKEN.'
+    description: 'Token used to read the pull request and post the review. Defaults to the workflow token.'
     required: false
-    default: ''
+    default: ${{ github.token }}
   prompt:
     description: 'Extra review instructions appended to the default reviewer prompt.'
     required: false
