@@ -1,3 +1,5 @@
+import * as core from '@actions/core';
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -86,6 +88,18 @@ export async function chatCompletion(
         if (response.status === 400 && useJsonMode && /response_format|json/i.test(detail)) {
           // The model or host does not support JSON mode - fall back to plain text.
           return chatCompletion(options, messages, false);
+        }
+
+        // The direct cloud API uses plain ids ("glm-5.3") while a local Ollama
+        // server uses the ":cloud" suffix ("glm-5.3:cloud"). Try the other form
+        // before giving up.
+        if (
+          (response.status === 404 || response.status === 400) &&
+          !options.model.endsWith(':cloud') &&
+          /model|not found|does not exist/i.test(detail)
+        ) {
+          core.warning(`Model "${options.model}" was not found, retrying as "${options.model}:cloud".`);
+          return chatCompletion({ ...options, model: `${options.model}:cloud` }, messages, useJsonMode);
         }
 
         if (response.status === 429 || response.status >= 500) {
