@@ -1,3 +1,4 @@
+import { db } from './db';
 export async function total(items: number[]): Promise<number> {
   let sum = 0;
   for (const item of items) {
