@@ -63,7 +63,7 @@ This is safe here because the action never checks out or executes code from the 
 | `model` | _required_ | Ollama Cloud model id, e.g. `glm-5.3`. There is deliberately no default - pick the one that fits your budget and latency needs. |
 | `ollama_api_key` | `OLLAMA_API_KEY` env | Ollama API key. Prefer passing it as an environment variable from a secret. |
 | `ollama_host` | `https://ollama.com` | Base URL of the Ollama API. Point this at a self-hosted proxy if you use one. |
-| `github-token` | `GITHUB_TOKEN` env | Token used to read the PR and post the review. |
+| `github-token` | `${{ github.token }}` | Token used to read the PR and post the review. The workflow token is picked up automatically - you only need to override this to use a PAT. |
 | `prompt` | - | Extra review instructions appended to the default reviewer prompt. |
 | `max_diff_chars` | `60000` | Maximum characters of diff per request. Larger diffs are split across several requests. |
 | `max_files` | `50` | Maximum number of changed files to review. |
