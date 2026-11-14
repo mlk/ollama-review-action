@@ -32,8 +32,11 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function chatResponse(content: string): Response {
-  return jsonResponse({ choices: [{ message: { content } }] });
+function chatResponse(content: string, usage?: Record<string, unknown>): Response {
+  return jsonResponse({
+    choices: [{ message: { content } }],
+    ...(usage ? { usage } : {}),
+  });
 }
 
 const messages = [
@@ -52,7 +55,7 @@ const options = {
 describe('chatCompletion', () => {
   it('returns the assistant content', async () => {
     mockFetch(() => chatResponse('hello'));
-    assert.equal(await chatCompletion(options, messages), 'hello');
+    assert.equal((await chatCompletion(options, messages)).content, 'hello');
   });
 
   it('posts to the chat completions endpoint with a bearer token', async () => {
@@ -113,7 +116,7 @@ describe('chatCompletion', () => {
       return chatResponse('plain');
     });
 
-    assert.equal(await chatCompletion(options, messages), 'plain');
+    assert.equal((await chatCompletion(options, messages)).content, 'plain');
     assert.equal(calls.length, 2);
     assert.equal(JSON.parse(String(calls[1]?.init.body)).response_format, undefined);
   });
@@ -126,7 +129,7 @@ describe('chatCompletion', () => {
       return chatResponse('ok');
     });
 
-    assert.equal(await chatCompletion(options, messages), 'ok');
+    assert.equal((await chatCompletion(options, messages)).content, 'ok');
     assert.equal(JSON.parse(String(calls[0]?.init.body)).model, 'glm-5.3');
     assert.equal(JSON.parse(String(calls[1]?.init.body)).model, 'glm-5.3:cloud');
   });
@@ -153,7 +156,7 @@ describe('chatCompletion', () => {
       return chatResponse('recovered');
     });
 
-    assert.equal(await chatCompletion(options, messages), 'recovered');
+    assert.equal((await chatCompletion(options, messages)).content, 'recovered');
     assert.equal(calls.length, 3);
   });
 
@@ -165,7 +168,7 @@ describe('chatCompletion', () => {
       return chatResponse('ok');
     });
 
-    assert.equal(await chatCompletion(options, messages), 'ok');
+    assert.equal((await chatCompletion(options, messages)).content, 'ok');
     assert.equal(calls.length, 2);
   });
 
@@ -174,6 +177,36 @@ describe('chatCompletion', () => {
 
     await assert.rejects(() => chatCompletion(options, messages), /Ollama request failed/);
     assert.equal(calls.length, 3);
+  });
+
+  it('returns the token usage when the host reports it', async () => {
+    mockFetch(() =>
+      chatResponse('hello', { prompt_tokens: 1200, completion_tokens: 340, total_tokens: 1540 }),
+    );
+
+    const result = await chatCompletion(options, messages);
+    assert.deepEqual(result.usage, { promptTokens: 1200, completionTokens: 340, totalTokens: 1540 });
+  });
+
+  it('derives the total from the prompt and completion counts when absent', async () => {
+    mockFetch(() => chatResponse('hello', { prompt_tokens: 100, completion_tokens: 40 }));
+
+    const result = await chatCompletion(options, messages);
+    assert.deepEqual(result.usage, { promptTokens: 100, completionTokens: 40, totalTokens: 140 });
+  });
+
+  it('omits the usage when the host does not report it', async () => {
+    mockFetch(() => chatResponse('hello'));
+
+    const result = await chatCompletion(options, messages);
+    assert.equal(result.usage, undefined);
+  });
+
+  it('omits the usage when the reported counts are not usable', async () => {
+    mockFetch(() => chatResponse('hello', { prompt_tokens: 'nope' }));
+
+    const result = await chatCompletion(options, messages);
+    assert.equal(result.usage, undefined);
   });
 
   it('does not retry a 401', async () => {

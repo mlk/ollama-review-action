@@ -1,5 +1,7 @@
 import { warning } from '@actions/core';
 
+import { TokenUsage } from './types';
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -17,6 +19,11 @@ export interface OllamaClientOptions {
   retryDelayMs?: number;
 }
 
+export interface ChatResult {
+  content: string;
+  usage?: TokenUsage;
+}
+
 interface ChatCompletionResponse {
   choices?: Array<{
     message?: {
@@ -25,6 +32,11 @@ interface ChatCompletionResponse {
       reasoning?: string;
     };
   }>;
+  usage?: {
+    prompt_tokens?: unknown;
+    completion_tokens?: unknown;
+    total_tokens?: unknown;
+  };
   error?: { message?: string };
 }
 
@@ -36,6 +48,34 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function tokenCount(value: unknown): number | undefined {
+  const count = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(count) && count >= 0 ? Math.floor(count) : undefined;
+}
+
+function parseUsage(usage: ChatCompletionResponse['usage']): TokenUsage | undefined {
+  if (!usage) {
+    return undefined;
+  }
+  const promptTokens = tokenCount(usage.prompt_tokens);
+  const completionTokens = tokenCount(usage.completion_tokens);
+  const totalTokens =
+    tokenCount(usage.total_tokens) ??
+    (promptTokens !== undefined && completionTokens !== undefined
+      ? promptTokens + completionTokens
+      : undefined);
+
+  if (totalTokens === undefined) {
+    return undefined;
+  }
+
+  return {
+    promptTokens: promptTokens ?? 0,
+    completionTokens: completionTokens ?? 0,
+    totalTokens,
+  };
+}
+
 async function readError(response: Response): Promise<string> {
   const body = await response.text().catch(() => '');
   return body ? `${response.status} ${response.statusText} - ${body}` : `${response.status} ${response.statusText}`;
@@ -43,13 +83,13 @@ async function readError(response: Response): Promise<string> {
 
 /**
  * Calls the Ollama OpenAI-compatible chat completions endpoint.
- * Returns the assistant message content.
+ * Returns the assistant message content and, when the host reports it, the token usage.
  */
 export async function chatCompletion(
   options: OllamaClientOptions,
   messages: ChatMessage[],
   useJsonMode = true,
-): Promise<string> {
+): Promise<ChatResult> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const retries = options.retries ?? DEFAULT_RETRIES;
   const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
@@ -146,7 +186,7 @@ export async function chatCompletion(
       throw new Error('Ollama returned an empty response.');
     }
 
-    return content;
+    return { content, usage: parseUsage(payload.usage) };
   }
 
   throw lastError ?? new Error('Ollama request failed.');

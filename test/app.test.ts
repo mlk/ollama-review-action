@@ -101,18 +101,21 @@ function deps(
     getOctokit: () => makeOctokit(state, files),
     chat: async (_options, messages) => {
       state.prompts.push(messages[1]?.content ?? '');
-      return JSON.stringify({
-        summary: 'Looks fine.',
-        findings: [
-          {
-            path: 'src/app.ts',
-            line: 2,
-            severity: 'major',
-            title: 'Something is wrong',
-            body: 'Here is why.',
-          },
-        ],
-      });
+      return {
+        content: JSON.stringify({
+          summary: 'Looks fine.',
+          findings: [
+            {
+              path: 'src/app.ts',
+              line: 2,
+              severity: 'major',
+              title: 'Something is wrong',
+              body: 'Here is why.',
+            },
+          ],
+        }),
+        usage: { promptTokens: 1000, completionTokens: 500, totalTokens: 1500 },
+      };
     },
     info: () => {},
     warning: (message) => state.warnings.push(message),
@@ -166,6 +169,29 @@ describe('run', () => {
     assert.equal(inline[0]?.path, 'src/app.ts');
     assert.equal(inline[0]?.line, 2);
     assert.equal(inline[0]?.commit_id, 'sha123');
+  });
+
+  it('includes the token usage in the summary comment', async () => {
+    await run(deps(recorded, {}, oneFile));
+
+    const summary = recorded.created.find((call) => 'issue_number' in call);
+    assert.match(String(summary?.body), /1,500 tokens \(1,000 in \/ 500 out\)/);
+  });
+
+  it('accumulates token usage across chunks', async () => {
+    const files = Array.from({ length: 6 }, (_, index) => ({
+      filename: `file-${index}.ts`,
+      status: 'modified',
+      additions: 1,
+      deletions: 0,
+      patch: `@@ -1,2 +1,2 @@\n a\n+${'x'.repeat(400)}`,
+    }));
+
+    await run(deps(recorded, { loadConfig: () => config({ maxDiffChars: 600 }) }, files));
+
+    const expected = (recorded.prompts.length * 1500).toLocaleString('en-US');
+    const summary = recorded.created.find((call) => 'issue_number' in call);
+    assert.match(String(summary?.body), new RegExp(`${expected} tokens`));
   });
 
   it('sets the documented outputs', async () => {
@@ -240,7 +266,7 @@ describe('run', () => {
       deps(
         recorded,
         {
-          chat: async () => 'this is not json',
+          chat: async () => ({ content: 'this is not json' }),
         },
         oneFile,
       ),
@@ -275,7 +301,7 @@ describe('run', () => {
           loadConfig: () => config({ model: 'kimi-k3.1-pro', temperature: 0.7 }),
           chat: async (options) => {
             seen = options as unknown as Record<string, unknown>;
-            return '{"summary":"s","findings":[]}';
+            return { content: '{"summary":"s","findings":[]}' };
           },
         },
         oneFile,
@@ -296,7 +322,7 @@ describe('run', () => {
           loadConfig: () => config({ reasoningEffort: 'high' }),
           chat: async (options) => {
             seen = options as unknown as Record<string, unknown>;
-            return '{"summary":"s","findings":[]}';
+            return { content: '{"summary":"s","findings":[]}' };
           },
         },
         oneFile,
@@ -315,7 +341,7 @@ describe('run', () => {
         {
           chat: async (options) => {
             seen = options as unknown as Record<string, unknown>;
-            return '{"summary":"s","findings":[]}';
+            return { content: '{"summary":"s","findings":[]}' };
           },
         },
         oneFile,
