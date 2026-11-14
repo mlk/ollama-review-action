@@ -202,6 +202,32 @@ describe('chatCompletion', () => {
     assert.equal(result.usage, undefined);
   });
 
+  it('omits the usage when only a total is reported', async () => {
+    mockFetch(() => chatResponse('hello', { total_tokens: 1540 }));
+
+    const result = await chatCompletion(options, messages);
+    assert.equal(result.usage, undefined);
+  });
+
+  it('omits the usage when a count is explicitly null', async () => {
+    mockFetch(() => chatResponse('hello', { prompt_tokens: null, completion_tokens: 40 }));
+
+    const result = await chatCompletion(options, messages);
+    assert.equal(result.usage, undefined);
+  });
+
+  it('omits the usage when a count is an empty string or boolean', async () => {
+    mockFetch(() => chatResponse('hello', { prompt_tokens: '', completion_tokens: 40 }));
+
+    const result = await chatCompletion(options, messages);
+    assert.equal(result.usage, undefined);
+
+    mockFetch(() => chatResponse('hello', { prompt_tokens: true, completion_tokens: 40 }));
+
+    const result2 = await chatCompletion(options, messages);
+    assert.equal(result2.usage, undefined);
+  });
+
   it('omits the usage when the reported counts are not usable', async () => {
     mockFetch(() => chatResponse('hello', { prompt_tokens: 'nope' }));
 

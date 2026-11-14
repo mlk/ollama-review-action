@@ -49,6 +49,9 @@ function sleep(ms: number): Promise<void> {
 }
 
 function tokenCount(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') {
+    return undefined;
+  }
   const count = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(count) && count >= 0 ? Math.floor(count) : undefined;
 }
@@ -59,21 +62,12 @@ function parseUsage(usage: ChatCompletionResponse['usage']): TokenUsage | undefi
   }
   const promptTokens = tokenCount(usage.prompt_tokens);
   const completionTokens = tokenCount(usage.completion_tokens);
-  const totalTokens =
-    tokenCount(usage.total_tokens) ??
-    (promptTokens !== undefined && completionTokens !== undefined
-      ? promptTokens + completionTokens
-      : undefined);
-
-  if (totalTokens === undefined) {
+  if (promptTokens === undefined || completionTokens === undefined) {
     return undefined;
   }
+  const totalTokens = tokenCount(usage.total_tokens) ?? promptTokens + completionTokens;
 
-  return {
-    promptTokens: promptTokens ?? 0,
-    completionTokens: completionTokens ?? 0,
-    totalTokens,
-  };
+  return { promptTokens, completionTokens, totalTokens };
 }
 
 async function readError(response: Response): Promise<string> {
