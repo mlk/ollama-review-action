@@ -21,7 +21,11 @@ inputs:
     required: false
     default: ''
   ollama_host:
-    description: 'Base URL of the Ollama API. Use "https://ollama.com" for Ollama Cloud.'
+    description: |
+      Base URL of the Ollama API. Use "https://ollama.com" for Ollama Cloud.
+      Must use https://; plain http:// is only allowed for loopback addresses
+      (localhost, 127.0.0.0/8, [::1]) for local development. Redirects to a
+      different origin are refused so the API key is never re-sent elsewhere.
     required: false
     default: 'https://ollama.com'
   github-token:

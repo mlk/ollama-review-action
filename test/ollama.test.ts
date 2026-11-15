@@ -242,3 +242,71 @@ describe('chatCompletion', () => {
     assert.equal(calls.length, 1);
   });
 });
+
+describe('chatCompletion redirects', () => {
+  const redirect = (status: number, location: string): Response =>
+    new Response(null, { status, headers: { location } });
+
+  it('follows a same-origin redirect and keeps the bearer token', async () => {
+    const { calls } = mockFetch((call, attempt) =>
+      attempt === 0
+        ? redirect(307, '/v1/chat/completions-relocated')
+        : chatResponse('redirected'),
+    );
+
+    const result = await chatCompletion(options, messages);
+
+    assert.equal(result.content, 'redirected');
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1]?.url, 'https://ollama.com/v1/chat/completions-relocated');
+    assert.equal(calls[1]?.init.method, 'POST');
+    const headers = calls[1]?.init.headers as Record<string, string>;
+    assert.equal(headers.Authorization, 'Bearer secret');
+    assert.equal(typeof calls[1]?.init.body, 'string');
+  });
+
+  it('refuses a redirect to a different origin without sending the key', async () => {
+    const { calls } = mockFetch(() => redirect(302, 'https://evil.example.com/steal'));
+
+    await assert.rejects(() => chatCompletion(options, messages), /different origin/);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.url, 'https://ollama.com/v1/chat/completions');
+  });
+
+  it('refuses a redirect that only differs by port', async () => {
+    const { calls } = mockFetch(() =>
+      redirect(301, 'https://ollama.com:8443/v1/chat/completions'),
+    );
+
+    await assert.rejects(() => chatCompletion(options, messages), /different origin/);
+    assert.equal(calls.length, 1);
+  });
+
+  it('switches a 303 redirect to GET without a body', async () => {
+    const { calls } = mockFetch((call, attempt) =>
+      attempt === 0 ? redirect(303, '/v1/chat/result') : chatResponse('done'),
+    );
+
+    const result = await chatCompletion(options, messages);
+
+    assert.equal(result.content, 'done');
+    assert.equal(calls[1]?.init.method, 'GET');
+    assert.equal(calls[1]?.init.body, undefined);
+    const headers = calls[1]?.init.headers as Record<string, string>;
+    assert.equal(headers['Content-Type'], undefined);
+  });
+
+  it('gives up after too many same-origin redirects', async () => {
+    const { calls } = mockFetch(() => redirect(307, '/v1/chat/completions'));
+
+    await assert.rejects(() => chatCompletion(options, messages), /Too many redirects/);
+    assert.equal(calls.length, 6);
+  });
+
+  it('fails fast on a dangling redirect location', async () => {
+    const { calls } = mockFetch(() => redirect(301, 'http://[invalid'));
+
+    await assert.rejects(() => chatCompletion(options, messages));
+    assert.equal(calls.length, 1);
+  });
+});

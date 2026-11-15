@@ -36117,6 +36117,49 @@ function getBoolInput(name, fallback) {
     }
     throw new Error(`Input "${name}" must be a boolean, got "${raw}".`);
 }
+/**
+ * The API key is sent as a bearer token to every request, so the host must be
+ * somewhere that token is safe to send. https:// is required, with the only
+ * exception of loopback addresses for local development.
+ */
+function isLoopbackHostname(hostname) {
+    const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (host === 'localhost' || host.endsWith('.localhost')) {
+        return true;
+    }
+    if (host === '::1' || host === '::ffff:127.0.0.1' || host === '::ffff:7f00:1') {
+        return true;
+    }
+    const octets = host.split('.');
+    if (octets.length !== 4) {
+        return false;
+    }
+    if (octets[0] !== '127') {
+        return false;
+    }
+    return octets.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+}
+function validateHost(raw) {
+    const host = (raw.trim() || 'https://ollama.com').replace(/\/+$/, '');
+    let url;
+    try {
+        url = new URL(host);
+    }
+    catch {
+        throw new Error(`Input "ollama_host" is not a valid URL, got "${host}".`);
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+        throw new Error(`Input "ollama_host" must use https://, got "${url.protocol}//" in "${host}".`);
+    }
+    if (url.username || url.password) {
+        throw new Error(`Input "ollama_host" must not contain embedded credentials, got "${host}".`);
+    }
+    if (url.protocol === 'http:' && !isLoopbackHostname(url.hostname)) {
+        throw new Error(`Input "ollama_host" must use https:// - plain http is only allowed for local development ` +
+            `(localhost, 127.0.0.0/8, [::1]), got "${host}".`);
+    }
+    return host;
+}
 function getContextFiles(raw) {
     const trimmed = raw.trim();
     if (/^(none|off|false)$/i.test(trimmed)) {
@@ -36138,7 +36181,7 @@ function loadConfig() {
         throw new Error('No Ollama API key found. Set the OLLAMA_API_KEY environment variable or pass the ' +
             '"ollama_api_key" input. Create a key at https://ollama.com/settings/keys');
     }
-    const host = ((0, core_1.getInput)('ollama_host').trim() || 'https://ollama.com').replace(/\/+$/, '');
+    const host = validateHost((0, core_1.getInput)('ollama_host'));
     const token = (0, core_1.getInput)('github-token').trim() || (process.env.GITHUB_TOKEN ?? '').trim();
     if (token === '') {
         throw new Error('No GitHub token found. Give the job "pull-requests: write" permission and make sure ' +
@@ -36634,6 +36677,11 @@ const core_1 = __nccwpck_require__(7484);
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_RETRIES = 2;
 const DEFAULT_RETRY_DELAY_MS = 2_000;
+const MAX_REDIRECTS = 5;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+/** A redirect we refuse to follow. Retrying will not change the answer. */
+class RedirectError extends Error {
+}
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -36661,6 +36709,75 @@ async function readError(response) {
     return body ? `${response.status} ${response.statusText} - ${body}` : `${response.status} ${response.statusText}`;
 }
 /**
+ * Fetches `url` without letting the runtime silently follow redirects. The
+ * request carries the Ollama bearer token, so a redirect to a different
+ * origin is refused outright; same-origin redirects are followed (up to
+ * MAX_REDIRECTS) with the method/body adjusted per the usual fetch rules.
+ */
+async function fetchSameOrigin(url, init) {
+    const origin = new URL(url).origin;
+    let currentUrl = url;
+    let method = init.method ?? 'GET';
+    let body = init.body;
+    let headers = init.headers;
+    for (let redirectCount = 0;; redirectCount += 1) {
+        const response = await fetch(currentUrl, {
+            ...init,
+            method,
+            body,
+            headers,
+            redirect: 'manual',
+        });
+        const location = response.headers.get('location');
+        if (!REDIRECT_STATUSES.has(response.status) || !location) {
+            return response;
+        }
+        if (redirectCount >= MAX_REDIRECTS) {
+            throw new RedirectError(`Too many redirects (more than ${MAX_REDIRECTS}) starting from ${url}.`);
+        }
+        let next;
+        try {
+            next = new URL(location, currentUrl);
+        }
+        catch {
+            throw new RedirectError(`Invalid redirect location "${location}" from ${currentUrl}.`);
+        }
+        if (next.origin !== origin) {
+            throw new RedirectError(`Refusing to follow redirect from ${origin} to ${next.origin}: ` +
+                'the Authorization header would be sent to a different origin.');
+        }
+        const stripBody = response.status === 303 ||
+            ((response.status === 301 || response.status === 302) && method !== 'GET' && method !== 'HEAD');
+        if (stripBody) {
+            method = 'GET';
+            body = undefined;
+            headers = dropHeader(headers, 'content-type');
+        }
+        currentUrl = next.href;
+    }
+}
+function dropHeader(headers, name) {
+    if (!headers) {
+        return headers;
+    }
+    const lower = name.toLowerCase();
+    if (headers instanceof Headers) {
+        const copy = new Headers(headers);
+        copy.delete(lower);
+        return copy;
+    }
+    if (Array.isArray(headers)) {
+        return headers.filter(([key]) => key.toLowerCase() !== lower);
+    }
+    const copy = {};
+    for (const [key, value] of Object.entries(headers)) {
+        if (key.toLowerCase() !== lower) {
+            copy[key] = value;
+        }
+    }
+    return copy;
+}
+/**
  * Calls the Ollama OpenAI-compatible chat completions endpoint.
  * Returns the assistant message content and, when the host reports it, the token usage.
  */
@@ -36685,7 +36802,7 @@ async function chatCompletion(options, messages, useJsonMode = true) {
     for (let attempt = 0; attempt <= retries; attempt += 1) {
         let response;
         try {
-            response = await fetch(endpoint, {
+            response = await fetchSameOrigin(endpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -36696,6 +36813,10 @@ async function chatCompletion(options, messages, useJsonMode = true) {
             });
         }
         catch (error) {
+            // A refused redirect is a fact about the endpoint, not a transient failure.
+            if (error instanceof RedirectError) {
+                throw error;
+            }
             // A network error or a timeout. These are worth retrying.
             const err = error instanceof Error ? error : new Error(String(error));
             lastError =

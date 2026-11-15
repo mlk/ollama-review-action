@@ -101,7 +101,7 @@ The action needs `pull-requests: write` and your `OLLAMA_API_KEY`, so it is wort
 | --- | --- | --- |
 | `model` | _required_ | Ollama Cloud model id, e.g. `glm-5.3`. There is deliberately no default - pick the one that fits your budget and latency needs. |
 | `ollama_api_key` | `OLLAMA_API_KEY` env | Ollama API key. Prefer passing it as an environment variable from a secret. |
-| `ollama_host` | `https://ollama.com` | Base URL of the Ollama API. Point this at a self-hosted proxy if you use one. |
+| `ollama_host` | `https://ollama.com` | Base URL of the Ollama API. Must use `https://`. Plain `http://` is only accepted for loopback addresses (`localhost`, `127.0.0.0/8`, `[::1]`) for local development; anything else is rejected when the action starts. The Ollama API key is never sent to a different origin - see "The Ollama host and TLS" below. |
 | `github-token` | `${{ github.token }}` | Token used to read the PR and post the review. The workflow token is picked up automatically - you only need to override this to use a PAT. |
 | `prompt` | - | Extra review instructions appended to the default reviewer prompt. |
 | `max_diff_chars` | `60000` | Maximum characters of diff per request. Larger diffs are split across several requests. |
@@ -113,6 +113,20 @@ The action needs `pull-requests: write` and your `OLLAMA_API_KEY`, so it is wort
 | `temperature` | `0.2` | Sampling temperature. |
 | `fail_on` | `none` | Fail the job when a finding of this severity or worse appears: `none`, `nit`, `minor`, `major`, `critical`, `blocker`. |
 | `post_review` | `true` | Set to `false` to print the review to the job log without posting it. |
+
+## The Ollama host and TLS
+
+The Ollama API key is sent as a bearer token with every request, so `ollama_host` is validated
+before any request is made:
+
+- The host must use `https://`. Plain `http://` is only accepted for loopback addresses
+  (`localhost`, anything under `127.0.0.0/8`, or `[::1]`), which is meant for a local Ollama
+  server during development, e.g. `ollama_host: http://localhost:11434`.
+- The URL must be valid and must not embed credentials (`https://user:pass@host` is rejected).
+- Redirects are followed only within the same origin. If the API answers with a redirect to a
+  different origin, the request is refused rather than re-sending the key there.
+
+Anything else fails the action at startup with a clear error, before any network call is made.
 
 ## Outputs
 

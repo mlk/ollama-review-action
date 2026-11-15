@@ -204,4 +204,54 @@ describe('loadConfig', () => {
     process.env.INPUT_CONTEXT_FILES = 'none';
     assert.deepEqual(loadConfig().contextFiles, []);
   });
+
+  it('accepts an https host', () => {
+    baseEnv();
+    process.env.INPUT_OLLAMA_HOST = 'https://proxy.internal:8443';
+    assert.equal(loadConfig().host, 'https://proxy.internal:8443');
+  });
+
+  it('accepts loopback http hosts for local development', () => {
+    baseEnv();
+    for (const host of [
+      'http://localhost:11434',
+      'http://127.0.0.1:11434',
+      'http://127.1.2.3:11434',
+      'http://[::1]:11434',
+    ]) {
+      process.env.INPUT_OLLAMA_HOST = host;
+      assert.equal(loadConfig().host, host);
+    }
+  });
+
+  it('rejects plain http for non-loopback hosts', () => {
+    baseEnv();
+    for (const host of [
+      'http://ollama.com',
+      'http://192.168.1.10:11434',
+      'http://127.0.0.1.evil.com',
+      'http://localhost.evil.example.com',
+    ]) {
+      process.env.INPUT_OLLAMA_HOST = host;
+      assert.throws(() => loadConfig(), /must use https/);
+    }
+  });
+
+  it('rejects non-http schemes', () => {
+    baseEnv();
+    process.env.INPUT_OLLAMA_HOST = 'ftp://proxy.internal';
+    assert.throws(() => loadConfig(), /must use https/);
+  });
+
+  it('rejects a host that is not a URL', () => {
+    baseEnv();
+    process.env.INPUT_OLLAMA_HOST = 'not a url';
+    assert.throws(() => loadConfig(), /not a valid URL/);
+  });
+
+  it('rejects a host with embedded credentials', () => {
+    baseEnv();
+    process.env.INPUT_OLLAMA_HOST = 'https://user:pass@proxy.internal';
+    assert.throws(() => loadConfig(), /embedded credentials/);
+  });
 });
