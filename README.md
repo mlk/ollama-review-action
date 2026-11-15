@@ -194,13 +194,12 @@ npm run build       # bundle to dist/index.js with ncc
 ### Cutting a release
 
 ```bash
-npm run build
-git commit -am "..."          # include the rebuilt dist/
-git tag -a v1 -m "v1"        # move the tag to the release commit
-git push origin main --follow-tags
+git fetch origin && git switch main && git pull
+git tag -fa v1 -m "v1"   # move the existing annotated tag to the merge commit
+git push origin v1 --force
 ```
 
-Then bump the pinned SHA in `README.md` and `.github/workflows/self-review.yml` to the new commit, so the example always points at the release it documents. CI fails if those two pins drift apart.
+`v1` is a moving tag - it always points at the release commit. Do not create per-release tags. Then bump the pinned SHA in `README.md` and `.github/workflows/self-review.yml` to the commit the tag now points at, so the example always points at the release it documents. CI fails if those two pins drift apart.
 
 ```bash
 gh api repos/mlk/ollama-review-action/commits/v1 --jq .sha
