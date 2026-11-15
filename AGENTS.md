@@ -138,8 +138,9 @@ Run `npm run all` before opening a pull request - it runs the lint, typecheck, c
 
 ## Development
 
-The usual loop is: change `src/`, add or update a test, run `npm run all`, rebuild `dist/`, and
-open a pull request.
+The usual loop is: change `src/`, add or update a test, run `npm run all` (which lints, typechecks,
+coverage-checks and rebuilds `dist/`), commit everything including the rebuilt `dist/`, and open a
+pull request.
 
 Pull requests to this repo get an automated review from the action itself
 (`.github/workflows/self-review.yml`). Treat its findings as input, not verdicts: fix what is real,
