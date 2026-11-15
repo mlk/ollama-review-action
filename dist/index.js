@@ -35986,6 +35986,8 @@ async function run(deps = exports.defaultDeps) {
     deps.info(`Reviewing ${selected.length} file(s) in ${chunks.length} request(s).`);
     const summaries = [];
     const findings = [];
+    const totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    let sawUsage = false;
     for (const [index, chunk] of chunks.entries()) {
         const diffText = (0, diff_1.truncate)((0, diff_1.renderDiff)(chunk), config.maxDiffChars);
         const userPrompt = (0, prompt_1.buildUserPrompt)(pullRequest, diffText, config.extraPrompt, chunk.length);
@@ -35999,20 +36001,26 @@ async function run(deps = exports.defaultDeps) {
             { role: 'system', content: prompt_1.SYSTEM_PROMPT },
             { role: 'user', content: userPrompt },
         ]);
+        if (response.usage) {
+            totalUsage.promptTokens += response.usage.promptTokens;
+            totalUsage.completionTokens += response.usage.completionTokens;
+            totalUsage.totalTokens += response.usage.totalTokens;
+            sawUsage = true;
+        }
         try {
-            const review = (0, parse_1.parseReview)(response);
+            const review = (0, parse_1.parseReview)(response.content);
             summaries.push(review.summary);
             findings.push(...review.findings);
         }
         catch (error) {
             deps.warning(`Could not parse the model response for chunk ${index + 1}: ${error.message}`);
-            deps.debug(response);
+            deps.debug(response.content);
         }
     }
     const summary = summaries.join('\n\n') || 'The model did not return a summary for this pull request.';
     const { anchored, unanchored } = (0, github_2.anchorFindings)(findings, selected);
     deps.info(`${anchored.length} anchored finding(s), ${unanchored.length} unanchored.`);
-    const body = (0, render_1.renderSummaryBody)(config.model, summary, anchored, unanchored);
+    const body = (0, render_1.renderSummaryBody)(config.model, summary, anchored, unanchored, sawUsage ? totalUsage : undefined);
     const comments = anchored.map((finding) => {
         const comment = {
             path: finding.path,
@@ -36554,13 +36562,32 @@ const DEFAULT_RETRY_DELAY_MS = 2_000;
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
+function tokenCount(value) {
+    if (value === null || value === undefined || value === '' || typeof value === 'boolean') {
+        return undefined;
+    }
+    const count = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(count) && count >= 0 ? Math.floor(count) : undefined;
+}
+function parseUsage(usage) {
+    if (!usage) {
+        return undefined;
+    }
+    const promptTokens = tokenCount(usage.prompt_tokens);
+    const completionTokens = tokenCount(usage.completion_tokens);
+    if (promptTokens === undefined || completionTokens === undefined) {
+        return undefined;
+    }
+    const totalTokens = tokenCount(usage.total_tokens) ?? promptTokens + completionTokens;
+    return { promptTokens, completionTokens, totalTokens };
+}
 async function readError(response) {
     const body = await response.text().catch(() => '');
     return body ? `${response.status} ${response.statusText} - ${body}` : `${response.status} ${response.statusText}`;
 }
 /**
  * Calls the Ollama OpenAI-compatible chat completions endpoint.
- * Returns the assistant message content.
+ * Returns the assistant message content and, when the host reports it, the token usage.
  */
 async function chatCompletion(options, messages, useJsonMode = true) {
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -36640,7 +36667,7 @@ async function chatCompletion(options, messages, useJsonMode = true) {
         if (!content) {
             throw new Error('Ollama returned an empty response.');
         }
-        return content;
+        return { content, usage: parseUsage(payload.usage) };
     }
     throw lastError ?? new Error('Ollama request failed.');
 }
@@ -36964,7 +36991,7 @@ function renderFindingBody(finding) {
     parts.push(exports.MARKER_INLINE);
     return parts.join('\n').trimEnd();
 }
-function renderSummaryBody(model, summary, findings, unanchored) {
+function renderSummaryBody(model, summary, findings, unanchored, usage) {
     const lines = [];
     lines.push(`${exports.MARKER_SUMMARY}:model=${model} -->`);
     lines.push('');
@@ -36983,7 +37010,14 @@ function renderSummaryBody(model, summary, findings, unanchored) {
         }
         lines.push('');
     }
-    lines.push(`<sub>Reviewed with \`${model}\` - ${findings.length} finding${findings.length === 1 ? '' : 's'}.</sub>`);
+    const format = (value) => value.toLocaleString('en-US');
+    const footer = [
+        `Reviewed with \`${model}\` - ${findings.length} finding${findings.length === 1 ? '' : 's'}.`,
+    ];
+    if (usage) {
+        footer.push(`${format(usage.totalTokens)} tokens (${format(usage.promptTokens)} in / ${format(usage.completionTokens)} out)`);
+    }
+    lines.push(`<sub>${footer.join(' · ')}</sub>`);
     return lines.join('\n');
 }
 

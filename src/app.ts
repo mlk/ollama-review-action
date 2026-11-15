@@ -10,19 +10,19 @@ import {
   replaceInlineComments,
   upsertSummaryComment,
 } from './github';
-import { ChatMessage, chatCompletion, OllamaClientOptions } from './ollama';
+import { ChatMessage, ChatResult, chatCompletion, OllamaClientOptions } from './ollama';
 import { parseReview } from './parse';
 import { buildUserPrompt, SYSTEM_PROMPT } from './prompt';
 import { MARKER_INLINE, MARKER_SUMMARY, renderFindingBody, renderSummaryBody } from './render';
 import { selectFiles } from './select';
-import { Finding, meetsThreshold, SEVERITIES } from './types';
+import { Finding, meetsThreshold, SEVERITIES, TokenUsage } from './types';
 
 export type Octokit = ReturnType<typeof getOctokit>;
 
 export interface Deps {
   loadConfig: () => Config;
   getOctokit: (token: string) => Octokit;
-  chat: (options: OllamaClientOptions, messages: ChatMessage[]) => Promise<string>;
+  chat: (options: OllamaClientOptions, messages: ChatMessage[]) => Promise<ChatResult>;
   info: (message: string) => void;
   warning: (message: string) => void;
   debug: (message: string) => void;
@@ -71,6 +71,8 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
 
   const summaries: string[] = [];
   const findings: Finding[] = [];
+  const totalUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  let sawUsage = false;
 
   for (const [index, chunk] of chunks.entries()) {
     const diffText = truncate(renderDiff(chunk), config.maxDiffChars);
@@ -90,15 +92,22 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
       ],
     );
 
+    if (response.usage) {
+      totalUsage.promptTokens += response.usage.promptTokens;
+      totalUsage.completionTokens += response.usage.completionTokens;
+      totalUsage.totalTokens += response.usage.totalTokens;
+      sawUsage = true;
+    }
+
     try {
-      const review = parseReview(response);
+      const review = parseReview(response.content);
       summaries.push(review.summary);
       findings.push(...review.findings);
     } catch (error) {
       deps.warning(
         `Could not parse the model response for chunk ${index + 1}: ${(error as Error).message}`,
       );
-      deps.debug(response);
+      deps.debug(response.content);
     }
   }
 
@@ -108,7 +117,13 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
 
   deps.info(`${anchored.length} anchored finding(s), ${unanchored.length} unanchored.`);
 
-  const body = renderSummaryBody(config.model, summary, anchored, unanchored);
+  const body = renderSummaryBody(
+    config.model,
+    summary,
+    anchored,
+    unanchored,
+    sawUsage ? totalUsage : undefined,
+  );
   const comments = anchored.map((finding) => {
     const comment: {
       path: string;

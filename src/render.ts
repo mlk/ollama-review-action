@@ -1,4 +1,4 @@
-import { Finding, Severity } from './types';
+import { Finding, Severity, TokenUsage } from './types';
 
 export const MARKER_SUMMARY = '<!-- ollama-review-action:summary';
 export const MARKER_INLINE = '<!-- ollama-review-action:inline -->';
@@ -67,6 +67,7 @@ export function renderSummaryBody(
   summary: string,
   findings: Finding[],
   unanchored: Finding[],
+  usage?: TokenUsage,
 ): string {
   const lines: string[] = [];
 
@@ -91,11 +92,20 @@ export function renderSummaryBody(
     lines.push('');
   }
 
-  lines.push(
-    `<sub>Reviewed with \`${model}\` - ${findings.length} finding${
-      findings.length === 1 ? '' : 's'
-    }.</sub>`,
-  );
+  const format = (value: number): string => value.toLocaleString('en-US');
+  const footer = [
+    `Reviewed with \`${model}\` - ${findings.length} finding${findings.length === 1 ? '' : 's'}.`,
+  ];
+
+  if (usage) {
+    footer.push(
+      `${format(usage.totalTokens)} tokens (${format(usage.promptTokens)} in / ${format(
+        usage.completionTokens,
+      )} out)`,
+    );
+  }
+
+  lines.push(`<sub>${footer.join(' · ')}</sub>`);
 
   return lines.join('\n');
 }

@@ -25,6 +25,12 @@ export interface Finding {
   suggestion?: string;
 }
 
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export type DiffLineKind = 'add' | 'del' | 'ctx' | 'hunk';
 
 export interface DiffLine {

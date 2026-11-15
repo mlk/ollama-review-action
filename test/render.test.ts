@@ -98,6 +98,22 @@ describe('renderSummaryBody', () => {
     assert.match(body, /2 findings\./);
   });
 
+  it('includes the token usage in the footer when provided', () => {
+    const body = renderSummaryBody('glm-5.3', 's', [finding()], [], {
+      promptTokens: 8000,
+      completionTokens: 4345,
+      totalTokens: 12345,
+    });
+
+    assert.match(body, /12,345 tokens \(8,000 in \/ 4,345 out\)/);
+  });
+
+  it('omits the token usage from the footer when not provided', () => {
+    const body = renderSummaryBody('glm-5.3', 's', [finding()], []);
+
+    assert.doesNotMatch(body, /tokens/);
+  });
+
   it('lists unanchored findings under other observations', () => {
     const body = renderSummaryBody('glm-5.3', 's', [], [finding({ title: 'Loose end' })]);
 
