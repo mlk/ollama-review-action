@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 15
     steps:
       # Bump this SHA when cutting a release.
-      - uses: mlk/ollama-review-action@8f3f01d74babc03ae18521a1122a0969e1793539 # v1
+      - uses: mlk/ollama-review-action@637b8047b5f317fe1576941dc98ee5475414c5f7 # v1
         with:
           model: glm-5.3
         env:
