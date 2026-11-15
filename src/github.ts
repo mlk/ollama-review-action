@@ -76,9 +76,6 @@ export async function getPullRequestContext(
   };
 }
 
-/** Cap per context file so a large README does not swallow the diff's token budget. */
-const MAX_CONTEXT_FILE_CHARS = 12_000;
-
 /**
  * Reads files from the repository at the given ref (the base commit, so a
  * contributor cannot steer the review by editing guidance in their own PR).
@@ -89,7 +86,7 @@ export async function fetchContextFiles(
   octokit: ReturnType<typeof getOctokit>,
   paths: string[],
   ref: string,
-  maxChars = MAX_CONTEXT_FILE_CHARS,
+  maxChars: number,
 ): Promise<RepoContextFile[]> {
   const { owner, repo } = ownerRepo();
   const files: RepoContextFile[] = [];

@@ -124,7 +124,7 @@ describe('fetchContextFiles', () => {
   it('returns the decoded content of each requested file', async () => {
     const octokit = octokitWithContent({ 'AGENTS.md': 'house rules', 'README.md': 'readme body' });
 
-    const files = await fetchContextFiles(octokit, ['AGENTS.md', 'README.md'], 'sha123');
+    const files = await fetchContextFiles(octokit, ['AGENTS.md', 'README.md'], 'sha123', 12_000);
 
     assert.deepEqual(files, [
       { path: 'AGENTS.md', content: 'house rules' },
@@ -135,7 +135,7 @@ describe('fetchContextFiles', () => {
   it('skips files that do not exist', async () => {
     const octokit = octokitWithContent({ 'AGENTS.md': 'house rules' });
 
-    const files = await fetchContextFiles(octokit, ['AGENTS.md', 'CONTRIBUTING.md'], 'sha123');
+    const files = await fetchContextFiles(octokit, ['AGENTS.md', 'CONTRIBUTING.md'], 'sha123', 12_000);
 
     assert.deepEqual(
       files.map((file) => file.path),
@@ -146,7 +146,7 @@ describe('fetchContextFiles', () => {
   it('truncates very large files', async () => {
     const octokit = octokitWithContent({ 'README.md': 'x'.repeat(20_000) });
 
-    const files = await fetchContextFiles(octokit, ['README.md'], 'sha123');
+    const files = await fetchContextFiles(octokit, ['README.md'], 'sha123', 12_000);
 
     assert.equal(files.length, 1);
     assert.ok(files[0]?.content.endsWith('[truncated]'));
@@ -166,7 +166,7 @@ describe('fetchContextFiles', () => {
   it('carries on when the API fails instead of 404ing', async () => {
     const octokit = octokitWithContent({ 'AGENTS.md': 'house rules' }, 500);
 
-    const files = await fetchContextFiles(octokit, ['AGENTS.md'], 'sha123');
+    const files = await fetchContextFiles(octokit, ['AGENTS.md'], 'sha123', 12_000);
 
     assert.deepEqual(files, []);
   });

@@ -2,6 +2,10 @@ import { getInput } from '@actions/core';
 
 import { isSeverity, Severity } from './types';
 
+/** Default per-file cap for context files, in characters. Kept in sync with the
+ * context_max_chars input default in action.yml. */
+export const DEFAULT_CONTEXT_MAX_CHARS = 12_000;
+
 export interface Config {
   model: string;
   apiKey: string;
@@ -110,7 +114,7 @@ export function loadConfig(): Config {
     maxFiles: getIntInput('max_files', 50),
     excludePaths,
     contextFiles: getContextFiles(getInput('context_files')),
-    contextMaxChars: getIntInput('context_max_chars', 12000),
+    contextMaxChars: getIntInput('context_max_chars', DEFAULT_CONTEXT_MAX_CHARS),
     reasoningEffort: getInput('reasoning_effort').trim(),
     temperature,
     failOn: failOnRaw as Severity | 'none',

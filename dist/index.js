@@ -36078,9 +36078,13 @@ async function run(deps = exports.defaultDeps) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DEFAULT_CONTEXT_MAX_CHARS = void 0;
 exports.loadConfig = loadConfig;
 const core_1 = __nccwpck_require__(7484);
 const types_1 = __nccwpck_require__(6141);
+/** Default per-file cap for context files, in characters. Kept in sync with the
+ * context_max_chars input default in action.yml. */
+exports.DEFAULT_CONTEXT_MAX_CHARS = 12_000;
 function getIntInput(name, fallback) {
     const raw = (0, core_1.getInput)(name).trim();
     if (raw === '') {
@@ -36156,7 +36160,7 @@ function loadConfig() {
         maxFiles: getIntInput('max_files', 50),
         excludePaths,
         contextFiles: getContextFiles((0, core_1.getInput)('context_files')),
-        contextMaxChars: getIntInput('context_max_chars', 12000),
+        contextMaxChars: getIntInput('context_max_chars', exports.DEFAULT_CONTEXT_MAX_CHARS),
         reasoningEffort: (0, core_1.getInput)('reasoning_effort').trim(),
         temperature,
         failOn: failOnRaw,
@@ -36409,15 +36413,13 @@ async function getPullRequestContext(octokit) {
         headRef: data.head.ref,
     };
 }
-/** Cap per context file so a large README does not swallow the diff's token budget. */
-const MAX_CONTEXT_FILE_CHARS = 12_000;
 /**
  * Reads files from the repository at the given ref (the base commit, so a
  * contributor cannot steer the review by editing guidance in their own PR).
  * Missing or unreadable files are skipped - they are context, never worth
  * failing the review over.
  */
-async function fetchContextFiles(octokit, paths, ref, maxChars = MAX_CONTEXT_FILE_CHARS) {
+async function fetchContextFiles(octokit, paths, ref, maxChars) {
     const { owner, repo } = ownerRepo();
     const files = [];
     for (const path of paths) {
