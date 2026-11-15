@@ -1,0 +1,3 @@
+# Every change wants the owner. A single-owner repository still gets the
+# review request notification, and a contributor cannot merge their own PR.
+* @mlk

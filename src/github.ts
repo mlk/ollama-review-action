@@ -86,6 +86,7 @@ export async function fetchContextFiles(
   octokit: ReturnType<typeof getOctokit>,
   paths: string[],
   ref: string,
+  maxChars = MAX_CONTEXT_FILE_CHARS,
 ): Promise<RepoContextFile[]> {
   const { owner, repo } = ownerRepo();
   const files: RepoContextFile[] = [];
@@ -103,8 +104,8 @@ export async function fetchContextFiles(
       if (content === '') {
         continue;
       }
-      if (content.length > MAX_CONTEXT_FILE_CHARS) {
-        content = `${content.slice(0, MAX_CONTEXT_FILE_CHARS)}\n[truncated]`;
+      if (content.length > maxChars) {
+        content = `${content.slice(0, maxChars)}\n[truncated]`;
       }
 
       files.push({ path, content });

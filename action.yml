@@ -51,6 +51,10 @@ inputs:
       Missing or unreadable files are skipped. Set to "none" to disable.
     required: false
     default: 'AGENTS.md,README.md'
+  context_max_chars:
+    description: 'Maximum characters per context file before it is truncated.'
+    required: false
+    default: '12000'
   reasoning_effort:
     description: 'Thinking budget for reasoning models, e.g. "low", "medium", "high". Omit to use the model default.'
     required: false

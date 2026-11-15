@@ -144,6 +144,16 @@ describe('fetchContextFiles', () => {
     assert.ok((files[0]?.content.length ?? 0) < 20_000);
   });
 
+  it('truncates to the maxChars argument when provided', async () => {
+    const octokit = octokitWithContent({ 'README.md': 'x'.repeat(5000) });
+
+    const files = await fetchContextFiles(octokit, ['README.md'], 'sha123', 100);
+
+    assert.equal(files.length, 1);
+    assert.ok(files[0]?.content.startsWith('x'.repeat(100)));
+    assert.ok(files[0]?.content.endsWith('[truncated]'));
+  });
+
   it('carries on when the API fails instead of 404ing', async () => {
     const octokit = octokitWithContent({ 'AGENTS.md': 'house rules' }, 500);
 

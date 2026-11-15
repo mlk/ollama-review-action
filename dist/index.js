@@ -35975,7 +35975,7 @@ async function run(deps = exports.defaultDeps) {
     let contextFiles = [];
     if (config.contextFiles.length > 0) {
         try {
-            contextFiles = await (0, github_2.fetchContextFiles)(octokit, config.contextFiles, pullRequest.headSha);
+            contextFiles = await (0, github_2.fetchContextFiles)(octokit, config.contextFiles, pullRequest.headSha, config.contextMaxChars);
         }
         catch (error) {
             deps.warning(`Could not read repository context files: ${error.message}`);
@@ -36157,6 +36157,7 @@ function loadConfig() {
         maxFiles: getIntInput('max_files', 50),
         excludePaths,
         contextFiles: getContextFiles((0, core_1.getInput)('context_files')),
+        contextMaxChars: getIntInput('context_max_chars', 12000),
         reasoningEffort: (0, core_1.getInput)('reasoning_effort').trim(),
         temperature,
         failOn: failOnRaw,
@@ -36414,7 +36415,7 @@ const MAX_CONTEXT_FILE_CHARS = 12_000;
  * reviewer sees the project's own guidance. Missing or unreadable files are
  * skipped - they are context, never worth failing the review over.
  */
-async function fetchContextFiles(octokit, paths, ref) {
+async function fetchContextFiles(octokit, paths, ref, maxChars = MAX_CONTEXT_FILE_CHARS) {
     const { owner, repo } = ownerRepo();
     const files = [];
     for (const path of paths) {
@@ -36428,8 +36429,8 @@ async function fetchContextFiles(octokit, paths, ref) {
             if (content === '') {
                 continue;
             }
-            if (content.length > MAX_CONTEXT_FILE_CHARS) {
-                content = `${content.slice(0, MAX_CONTEXT_FILE_CHARS)}\n[truncated]`;
+            if (content.length > maxChars) {
+                content = `${content.slice(0, maxChars)}\n[truncated]`;
             }
             files.push({ path, content });
         }

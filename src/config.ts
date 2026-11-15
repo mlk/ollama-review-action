@@ -12,6 +12,7 @@ export interface Config {
   maxFiles: number;
   excludePaths: string[];
   contextFiles: string[];
+  contextMaxChars: number;
   reasoningEffort: string;
   temperature: number;
   failOn: Severity | 'none';
@@ -114,6 +115,7 @@ export function loadConfig(): Config {
     maxFiles: getIntInput('max_files', 50),
     excludePaths,
     contextFiles: getContextFiles(getInput('context_files')),
+    contextMaxChars: getIntInput('context_max_chars', 12000),
     reasoningEffort: getInput('reasoning_effort').trim(),
     temperature,
     failOn: failOnRaw as Severity | 'none',

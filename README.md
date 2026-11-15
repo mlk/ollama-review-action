@@ -108,6 +108,7 @@ The action needs `pull-requests: write` and your `OLLAMA_API_KEY`, so it is wort
 | `max_files` | `50` | Maximum number of changed files to review. |
 | `exclude_paths` | - | Comma-separated glob patterns to skip, e.g. `**/*.lock,dist/**,docs/**`. |
 | `context_files` | `AGENTS.md,README.md` | Comma-separated repository files to include in the prompt as review context, read at the head commit. Missing files are skipped; set to `none` to disable. |
+| `context_max_chars` | `12000` | Maximum characters per context file before it is truncated. |
 | `reasoning_effort` | model default | Thinking budget for reasoning models: `low`, `medium`, `high`. |
 | `temperature` | `0.2` | Sampling temperature. |
 | `fail_on` | `none` | Fail the job when a finding of this severity or worse appears: `none`, `nit`, `minor`, `major`, `critical`, `blocker`. |

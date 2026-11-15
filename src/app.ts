@@ -58,7 +58,7 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
   let contextFiles: Awaited<ReturnType<typeof fetchContextFiles>> = [];
   if (config.contextFiles.length > 0) {
     try {
-      contextFiles = await fetchContextFiles(octokit, config.contextFiles, pullRequest.headSha);
+      contextFiles = await fetchContextFiles(octokit, config.contextFiles, pullRequest.headSha, config.contextMaxChars);
     } catch (error) {
       deps.warning(`Could not read repository context files: ${(error as Error).message}`);
     }

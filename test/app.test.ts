@@ -45,6 +45,7 @@ function config(overrides: Partial<Config> = {}): Config {
     maxFiles: 50,
     excludePaths: [],
     contextFiles: ['AGENTS.md', 'README.md'],
+    contextMaxChars: 12000,
     reasoningEffort: '',
     temperature: 0.2,
     failOn: 'none',
