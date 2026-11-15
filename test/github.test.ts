@@ -3,7 +3,7 @@ import { beforeEach, describe, it } from 'node:test';
 
 import * as github from '@actions/github';
 
-import { anchorFindings, fetchChangedFiles, getPullRequestContext, replaceInlineComments, upsertSummaryComment } from '../src/github';
+import { anchorFindings, fetchChangedFiles, fetchContextFiles, getPullRequestContext, replaceInlineComments, upsertSummaryComment } from '../src/github';
 import { buildFileDiff } from '../src/diff';
 import { Finding } from '../src/types';
 
@@ -81,6 +81,76 @@ const diff = buildFileDiff({
   additions: 1,
   deletions: 0,
   patch: '@@ -1,3 +1,3 @@\n a\n+b\n c',
+});
+
+function octokitWithContent(files: Record<string, string>, failWith?: number): ReturnType<typeof github.getOctokit> {
+  return {
+    rest: {
+      repos: {
+        getContent: async (params: { path: string }) => {
+          if (failWith !== undefined) {
+            const error = new Error('request failed') as Error & { status?: number };
+            error.status = failWith;
+            throw error;
+          }
+          const content = files[params.path];
+          if (content === undefined) {
+            const error = new Error('Not Found') as Error & { status?: number };
+            error.status = 404;
+            throw error;
+          }
+          return {
+            data: {
+              type: 'file',
+              content: Buffer.from(content, 'utf8').toString('base64'),
+            },
+          };
+        },
+      },
+    },
+  } as unknown as ReturnType<typeof github.getOctokit>;
+}
+
+describe('fetchContextFiles', () => {
+  it('returns the decoded content of each requested file', async () => {
+    const octokit = octokitWithContent({ 'AGENTS.md': 'house rules', 'README.md': 'readme body' });
+
+    const files = await fetchContextFiles(octokit, ['AGENTS.md', 'README.md'], 'sha123');
+
+    assert.deepEqual(files, [
+      { path: 'AGENTS.md', content: 'house rules' },
+      { path: 'README.md', content: 'readme body' },
+    ]);
+  });
+
+  it('skips files that do not exist', async () => {
+    const octokit = octokitWithContent({ 'AGENTS.md': 'house rules' });
+
+    const files = await fetchContextFiles(octokit, ['AGENTS.md', 'CONTRIBUTING.md'], 'sha123');
+
+    assert.deepEqual(
+      files.map((file) => file.path),
+      ['AGENTS.md'],
+    );
+  });
+
+  it('truncates very large files', async () => {
+    const octokit = octokitWithContent({ 'README.md': 'x'.repeat(20_000) });
+
+    const files = await fetchContextFiles(octokit, ['README.md'], 'sha123');
+
+    assert.equal(files.length, 1);
+    assert.ok(files[0]?.content.endsWith('[truncated]'));
+    assert.ok((files[0]?.content.length ?? 0) < 20_000);
+  });
+
+  it('carries on when the API fails instead of 404ing', async () => {
+    const octokit = octokitWithContent({ 'AGENTS.md': 'house rules' }, 500);
+
+    const files = await fetchContextFiles(octokit, ['AGENTS.md'], 'sha123');
+
+    assert.deepEqual(files, []);
+  });
 });
 
 describe('anchorFindings', () => {

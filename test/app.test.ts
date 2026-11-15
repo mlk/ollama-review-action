@@ -44,6 +44,7 @@ function config(overrides: Partial<Config> = {}): Config {
     maxDiffChars: 60000,
     maxFiles: 50,
     excludePaths: [],
+    contextFiles: ['AGENTS.md', 'README.md'],
     reasoningEffort: '',
     temperature: 0.2,
     failOn: 'none',
@@ -52,10 +53,28 @@ function config(overrides: Partial<Config> = {}): Config {
   };
 }
 
-function makeOctokit(state: Recorded, files: Array<Record<string, unknown>>): Octokit {
+function makeOctokit(
+  state: Recorded,
+  files: Array<Record<string, unknown>>,
+  contextFiles: Record<string, string> = {},
+): Octokit {
   const listIssueComments = async () => ({ data: [] });
   const listReviewComments = async () => ({ data: [] });
   const listFiles = async () => ({ data: files });
+  const getContent = async (params: { path: string }) => {
+    const content = contextFiles[params.path];
+    if (content === undefined) {
+      const error = new Error('Not Found') as Error & { status?: number };
+      error.status = 404;
+      throw error;
+    }
+    return {
+      data: {
+        type: 'file',
+        content: Buffer.from(content, 'utf8').toString('base64'),
+      },
+    };
+  };
 
   return {
     paginate: async (fn: () => Promise<{ data: unknown[] }>) => (await fn()).data,
@@ -87,6 +106,9 @@ function makeOctokit(state: Recorded, files: Array<Record<string, unknown>>): Oc
       users: {
         getAuthenticated: async () => ({ data: { login: 'bot' } }),
       },
+      repos: {
+        getContent,
+      },
     },
   } as unknown as Octokit;
 }
@@ -95,10 +117,11 @@ function deps(
   state: Recorded,
   overrides: Partial<Deps> = {},
   files: Array<Record<string, unknown>> = [],
+  contextFiles: Record<string, string> = {},
 ): Deps {
   return {
     loadConfig: () => config(),
-    getOctokit: () => makeOctokit(state, files),
+    getOctokit: () => makeOctokit(state, files, contextFiles),
     chat: async (_options, messages) => {
       state.prompts.push(messages[1]?.content ?? '');
       return JSON.stringify({
@@ -323,6 +346,35 @@ describe('run', () => {
     );
 
     assert.equal(seen.reasoningEffort, undefined);
+  });
+
+  it('includes repository context files in the prompt', async () => {
+    await run(
+      deps(recorded, {}, oneFile, { 'AGENTS.md': 'House style: never use var.' }),
+    );
+
+    assert.match(recorded.prompts[0] ?? '', /AGENTS\.md/);
+    assert.match(recorded.prompts[0] ?? '', /House style: never use var\./);
+  });
+
+  it('carries on when a context file is missing', async () => {
+    await run(deps(recorded, {}, oneFile));
+
+    assert.equal(recorded.warnings.length, 0);
+    assert.equal(recorded.outputs.failed, 'false');
+  });
+
+  it('omits the context section when context files are disabled', async () => {
+    await run(
+      deps(
+        recorded,
+        { loadConfig: () => config({ contextFiles: [] }) },
+        oneFile,
+        { 'AGENTS.md': 'House style: never use var.' },
+      ),
+    );
+
+    assert.doesNotMatch(recorded.prompts[0] ?? '', /House style/);
   });
 
   it('carries the extra prompt into the request', async () => {

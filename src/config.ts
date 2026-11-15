@@ -11,6 +11,7 @@ export interface Config {
   maxDiffChars: number;
   maxFiles: number;
   excludePaths: string[];
+  contextFiles: string[];
   reasoningEffort: string;
   temperature: number;
   failOn: Severity | 'none';
@@ -41,6 +42,22 @@ function getBoolInput(name: string, fallback: boolean): boolean {
     return false;
   }
   throw new Error(`Input "${name}" must be a boolean, got "${raw}".`);
+}
+
+const DEFAULT_CONTEXT_FILES = ['AGENTS.md', 'README.md'];
+
+function getContextFiles(raw: string): string[] {
+  const trimmed = raw.trim();
+  if (trimmed === '') {
+    return [...DEFAULT_CONTEXT_FILES];
+  }
+  if (/^(none|off|false)$/i.test(trimmed)) {
+    return [];
+  }
+  return trimmed
+    .split(',')
+    .map((path) => path.trim())
+    .filter((path) => path !== '');
 }
 
 export function loadConfig(): Config {
@@ -96,6 +113,7 @@ export function loadConfig(): Config {
     maxDiffChars: getIntInput('max_diff_chars', 60000),
     maxFiles: getIntInput('max_files', 50),
     excludePaths,
+    contextFiles: getContextFiles(getInput('context_files')),
     reasoningEffort: getInput('reasoning_effort').trim(),
     temperature,
     failOn: failOnRaw as Severity | 'none',

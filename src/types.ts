@@ -53,6 +53,12 @@ export interface FileDiff {
   truncated: boolean;
 }
 
+/** A file from the repository under review, included in the prompt as context. */
+export interface RepoContextFile {
+  path: string;
+  content: string;
+}
+
 export interface PullRequestContext {
   number: number;
   headSha: string;

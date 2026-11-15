@@ -1,4 +1,4 @@
-import { PullRequestContext } from './types';
+import { PullRequestContext, RepoContextFile } from './types';
 
 export const SYSTEM_PROMPT = `You are a senior software engineer performing a rigorous code review of a pull request.
 
@@ -49,6 +49,7 @@ export function buildUserPrompt(
   diffText: string,
   extraPrompt: string,
   fileCount: number,
+  contextFiles: RepoContextFile[] = [],
 ): string {
   const sections: string[] = [];
 
@@ -63,6 +64,13 @@ export function buildUserPrompt(
   );
 
   const description = context.body.trim();
+  if (contextFiles.length > 0) {
+    const rendered = contextFiles.map((file) => `### ${file.path}\n${file.content}`).join('\n\n');
+    sections.push(
+      `Guidance from the repository itself, read at the head commit. Treat it as authoritative for the project's conventions and intent:\n\n${rendered}`,
+    );
+  }
+
   if (description !== '') {
     sections.push(`Description:\n${description}`);
   }

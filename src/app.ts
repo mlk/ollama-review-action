@@ -6,6 +6,7 @@ import { chunkDiffs, renderDiff, truncate } from './diff';
 import {
   anchorFindings,
   fetchChangedFiles,
+  fetchContextFiles,
   getPullRequestContext,
   replaceInlineComments,
   upsertSummaryComment,
@@ -54,6 +55,18 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
   const pullRequest = await getPullRequestContext(octokit);
   deps.info(`PR #${pullRequest.number}: ${pullRequest.title}`);
 
+  let contextFiles: Awaited<ReturnType<typeof fetchContextFiles>> = [];
+  if (config.contextFiles.length > 0) {
+    try {
+      contextFiles = await fetchContextFiles(octokit, config.contextFiles, pullRequest.headSha);
+    } catch (error) {
+      deps.warning(`Could not read repository context files: ${(error as Error).message}`);
+    }
+    if (contextFiles.length > 0) {
+      deps.info(`Including ${contextFiles.length} context file(s): ${contextFiles.map((f) => f.path).join(', ')}`);
+    }
+  }
+
   const files = await fetchChangedFiles(octokit, pullRequest.number);
   if (files.length === 0) {
     deps.info('No changed files to review.');
@@ -74,7 +87,13 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
 
   for (const [index, chunk] of chunks.entries()) {
     const diffText = truncate(renderDiff(chunk), config.maxDiffChars);
-    const userPrompt = buildUserPrompt(pullRequest, diffText, config.extraPrompt, chunk.length);
+    const userPrompt = buildUserPrompt(
+      pullRequest,
+      diffText,
+      config.extraPrompt,
+      chunk.length,
+      contextFiles,
+    );
 
     const response = await deps.chat(
       {

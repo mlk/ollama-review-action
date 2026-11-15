@@ -2,7 +2,7 @@ import { info, warning } from '@actions/core';
 import { context, getOctokit } from '@actions/github';
 
 import { buildFileDiff } from './diff';
-import { FileDiff, Finding, PullRequestContext } from './types';
+import { FileDiff, Finding, PullRequestContext, RepoContextFile } from './types';
 
 export interface ReviewComment {
   path: string;
@@ -72,6 +72,53 @@ export async function getPullRequestContext(
     baseRef: data.base.ref,
     headRef: data.head.ref,
   };
+}
+
+/** Cap per context file so a large README does not swallow the diff's token budget. */
+const MAX_CONTEXT_FILE_CHARS = 12_000;
+
+/**
+ * Reads files from the repository at the given ref (the PR head) so the
+ * reviewer sees the project's own guidance. Missing or unreadable files are
+ * skipped - they are context, never worth failing the review over.
+ */
+export async function fetchContextFiles(
+  octokit: ReturnType<typeof getOctokit>,
+  paths: string[],
+  ref: string,
+): Promise<RepoContextFile[]> {
+  const { owner, repo } = ownerRepo();
+  const files: RepoContextFile[] = [];
+
+  for (const path of paths) {
+    try {
+      const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref });
+
+      if (Array.isArray(data) || data.type !== 'file' || !data.content) {
+        info(`Skipping context file "${path}": not a regular file.`);
+        continue;
+      }
+
+      let content = Buffer.from(data.content, 'base64').toString('utf8').trim();
+      if (content === '') {
+        continue;
+      }
+      if (content.length > MAX_CONTEXT_FILE_CHARS) {
+        content = `${content.slice(0, MAX_CONTEXT_FILE_CHARS)}\n[truncated]`;
+      }
+
+      files.push({ path, content });
+    } catch (error) {
+      const status = (error as { status?: number }).status;
+      if (status === 404) {
+        info(`Context file "${path}" not found at ${ref.slice(0, 7)}; skipping.`);
+      } else {
+        warning(`Could not read context file "${path}": ${(error as Error).message}`);
+      }
+    }
+  }
+
+  return files;
 }
 
 export interface ChangedFile {

@@ -44,6 +44,13 @@ inputs:
     description: 'Comma-separated glob patterns of files to skip, e.g. "**/*.lock,dist/**,docs/**".'
     required: false
     default: ''
+  context_files:
+    description: |
+      Comma-separated list of repository files to include in the prompt as review
+      context (read at the head commit), e.g. "AGENTS.md,README.md,CONTRIBUTING.md".
+      Missing or unreadable files are skipped. Set to "none" to disable.
+    required: false
+    default: 'AGENTS.md,README.md'
   reasoning_effort:
     description: 'Thinking budget for reasoning models, e.g. "low", "medium", "high". Omit to use the model default.'
     required: false
