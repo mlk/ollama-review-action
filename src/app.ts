@@ -61,6 +61,12 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
     return;
   }
 
+  const selected = selectFiles(files, config.excludePaths, config.maxFiles);
+  if (selected.length === 0) {
+    deps.info('Nothing to review after filtering.');
+    return;
+  }
+
   let contextFiles: Awaited<ReturnType<typeof fetchContextFiles>> = [];
   if (config.contextFiles.length > 0) {
     try {
@@ -83,11 +89,6 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
     }
   }
 
-  const selected = selectFiles(files, config.excludePaths, config.maxFiles);
-  if (selected.length === 0) {
-    deps.info('Nothing to review after filtering.');
-    return;
-  }
 
   const chunks = chunkDiffs(selected, config.maxDiffChars);
   deps.info(`Reviewing ${selected.length} file(s) in ${chunks.length} request(s).`);

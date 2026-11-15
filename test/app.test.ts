@@ -17,6 +17,7 @@ interface Recorded {
   updated: Array<Record<string, unknown>>;
   deleted: Array<Record<string, unknown>>;
   prompts: string[];
+  refs: Array<string | undefined>;
 }
 
 let recorded: Recorded;
@@ -31,6 +32,7 @@ function emptyRecorded(): Recorded {
     updated: [],
     deleted: [],
     prompts: [],
+    refs: [],
   };
 }
 
@@ -62,7 +64,8 @@ function makeOctokit(
   const listIssueComments = async () => ({ data: [] });
   const listReviewComments = async () => ({ data: [] });
   const listFiles = async () => ({ data: files });
-  const getContent = async (params: { path: string }) => {
+  const getContent = async (params: { path: string; ref?: string }) => {
+    state.refs.push(params.ref);
     const content = contextFiles[params.path];
     if (content === undefined) {
       const error = new Error('Not Found') as Error & { status?: number };
@@ -356,6 +359,17 @@ describe('run', () => {
 
     assert.match(recorded.prompts[0] ?? '', /AGENTS\.md/);
     assert.match(recorded.prompts[0] ?? '', /House style: never use var\./);
+  });
+
+  it('reads context files from the base commit, not the head', async () => {
+    await run(
+      deps(recorded, {}, oneFile, { 'AGENTS.md': 'House style: never use var.' }),
+    );
+
+    assert.ok(recorded.refs.length > 0);
+    for (const ref of recorded.refs) {
+      assert.equal(ref, 'base-sha');
+    }
   });
 
   it('carries on when a context file is missing', async () => {

@@ -35977,6 +35977,11 @@ async function run(deps = exports.defaultDeps) {
         deps.info('No changed files to review.');
         return;
     }
+    const selected = (0, select_1.selectFiles)(files, config.excludePaths, config.maxFiles);
+    if (selected.length === 0) {
+        deps.info('Nothing to review after filtering.');
+        return;
+    }
     let contextFiles = [];
     if (config.contextFiles.length > 0) {
         try {
@@ -35991,11 +35996,6 @@ async function run(deps = exports.defaultDeps) {
         if (contextFiles.length > 0) {
             deps.info(`Including ${contextFiles.length} context file(s): ${contextFiles.map((f) => f.path).join(', ')}`);
         }
-    }
-    const selected = (0, select_1.selectFiles)(files, config.excludePaths, config.maxFiles);
-    if (selected.length === 0) {
-        deps.info('Nothing to review after filtering.');
-        return;
     }
     const chunks = (0, diff_1.chunkDiffs)(selected, config.maxDiffChars);
     deps.info(`Reviewing ${selected.length} file(s) in ${chunks.length} request(s).`);
