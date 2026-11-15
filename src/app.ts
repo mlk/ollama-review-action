@@ -55,22 +55,32 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
   const pullRequest = await getPullRequestContext(octokit);
   deps.info(`PR #${pullRequest.number}: ${pullRequest.title}`);
 
-  let contextFiles: Awaited<ReturnType<typeof fetchContextFiles>> = [];
-  if (config.contextFiles.length > 0) {
-    try {
-      contextFiles = await fetchContextFiles(octokit, config.contextFiles, pullRequest.headSha, config.contextMaxChars);
-    } catch (error) {
-      deps.warning(`Could not read repository context files: ${(error as Error).message}`);
-    }
-    if (contextFiles.length > 0) {
-      deps.info(`Including ${contextFiles.length} context file(s): ${contextFiles.map((f) => f.path).join(', ')}`);
-    }
-  }
-
   const files = await fetchChangedFiles(octokit, pullRequest.number);
   if (files.length === 0) {
     deps.info('No changed files to review.');
     return;
+  }
+
+  let contextFiles: Awaited<ReturnType<typeof fetchContextFiles>> = [];
+  if (config.contextFiles.length > 0) {
+    try {
+      // Guidance comes from the base commit: a pull request must not be able to
+      // steer its own review by editing guidance in the same diff. The PR's own
+      // edits to those files are still visible to the model through the diff.
+      contextFiles = await fetchContextFiles(
+        octokit,
+        config.contextFiles,
+        pullRequest.baseSha || pullRequest.baseRef,
+        config.contextMaxChars,
+      );
+    } catch (error) {
+      deps.warning(`Could not read repository context files: ${(error as Error).message}`);
+    }
+    if (contextFiles.length > 0) {
+      deps.info(
+        `Including ${contextFiles.length} context file(s): ${contextFiles.map((f) => f.path).join(', ')}`,
+      );
+    }
   }
 
   const selected = selectFiles(files, config.excludePaths, config.maxFiles);

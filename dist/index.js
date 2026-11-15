@@ -35972,10 +35972,18 @@ async function run(deps = exports.defaultDeps) {
     deps.info(`Reviewing pull request with model "${config.model}" via ${config.host}.`);
     const pullRequest = await (0, github_2.getPullRequestContext)(octokit);
     deps.info(`PR #${pullRequest.number}: ${pullRequest.title}`);
+    const files = await (0, github_2.fetchChangedFiles)(octokit, pullRequest.number);
+    if (files.length === 0) {
+        deps.info('No changed files to review.');
+        return;
+    }
     let contextFiles = [];
     if (config.contextFiles.length > 0) {
         try {
-            contextFiles = await (0, github_2.fetchContextFiles)(octokit, config.contextFiles, pullRequest.headSha, config.contextMaxChars);
+            // Guidance comes from the base commit: a pull request must not be able to
+            // steer its own review by editing guidance in the same diff. The PR's own
+            // edits to those files are still visible to the model through the diff.
+            contextFiles = await (0, github_2.fetchContextFiles)(octokit, config.contextFiles, pullRequest.baseSha || pullRequest.baseRef, config.contextMaxChars);
         }
         catch (error) {
             deps.warning(`Could not read repository context files: ${error.message}`);
@@ -35983,11 +35991,6 @@ async function run(deps = exports.defaultDeps) {
         if (contextFiles.length > 0) {
             deps.info(`Including ${contextFiles.length} context file(s): ${contextFiles.map((f) => f.path).join(', ')}`);
         }
-    }
-    const files = await (0, github_2.fetchChangedFiles)(octokit, pullRequest.number);
-    if (files.length === 0) {
-        deps.info('No changed files to review.');
-        return;
     }
     const selected = (0, select_1.selectFiles)(files, config.excludePaths, config.maxFiles);
     if (selected.length === 0) {
@@ -36102,12 +36105,8 @@ function getBoolInput(name, fallback) {
     }
     throw new Error(`Input "${name}" must be a boolean, got "${raw}".`);
 }
-const DEFAULT_CONTEXT_FILES = ['AGENTS.md', 'README.md'];
 function getContextFiles(raw) {
     const trimmed = raw.trim();
-    if (trimmed === '') {
-        return [...DEFAULT_CONTEXT_FILES];
-    }
     if (/^(none|off|false)$/i.test(trimmed)) {
         return [];
     }
@@ -36390,6 +36389,7 @@ async function getPullRequestContext(octokit) {
         return {
             number,
             headSha: String(pullRequest.head?.sha ?? ''),
+            baseSha: pullRequest.base?.sha,
             title: String(pullRequest.title ?? ''),
             body: String(pullRequest.body ?? ''),
             author: String(pullRequest.user?.login ?? 'unknown'),
@@ -36401,6 +36401,7 @@ async function getPullRequestContext(octokit) {
     return {
         number,
         headSha: data.head.sha,
+        baseSha: data.base.sha,
         title: data.title,
         body: data.body ?? '',
         author: data.user?.login ?? 'unknown',
@@ -36411,9 +36412,10 @@ async function getPullRequestContext(octokit) {
 /** Cap per context file so a large README does not swallow the diff's token budget. */
 const MAX_CONTEXT_FILE_CHARS = 12_000;
 /**
- * Reads files from the repository at the given ref (the PR head) so the
- * reviewer sees the project's own guidance. Missing or unreadable files are
- * skipped - they are context, never worth failing the review over.
+ * Reads files from the repository at the given ref (the base commit, so a
+ * contributor cannot steer the review by editing guidance in their own PR).
+ * Missing or unreadable files are skipped - they are context, never worth
+ * failing the review over.
  */
 async function fetchContextFiles(octokit, paths, ref, maxChars = MAX_CONTEXT_FILE_CHARS) {
     const { owner, repo } = ownerRepo();
@@ -36421,8 +36423,12 @@ async function fetchContextFiles(octokit, paths, ref, maxChars = MAX_CONTEXT_FIL
     for (const path of paths) {
         try {
             const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref });
-            if (Array.isArray(data) || data.type !== 'file' || !data.content) {
+            if (Array.isArray(data) || data.type !== 'file') {
                 (0, core_1.info)(`Skipping context file "${path}": not a regular file.`);
+                continue;
+            }
+            if (!data.content) {
+                (0, core_1.info)(`Skipping context file "${path}": no content returned (likely exceeds the 1 MB contents API limit).`);
                 continue;
             }
             let content = Buffer.from(data.content, 'base64').toString('utf8').trim();
@@ -36943,7 +36949,7 @@ function buildUserPrompt(context, diffText, extraPrompt, fileCount, contextFiles
     const description = context.body.trim();
     if (contextFiles.length > 0) {
         const rendered = contextFiles.map((file) => `### ${file.path}\n${file.content}`).join('\n\n');
-        sections.push(`Guidance from the repository itself, read at the head commit. Treat it as authoritative for the project's conventions and intent:\n\n${rendered}`);
+        sections.push(`Guidance from the repository (files from the base commit, before this pull request). Treat it as authoritative for the project's conventions and intent:\n\n${rendered}`);
     }
     if (description !== '') {
         sections.push(`Description:\n${description}`);

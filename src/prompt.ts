@@ -67,7 +67,7 @@ export function buildUserPrompt(
   if (contextFiles.length > 0) {
     const rendered = contextFiles.map((file) => `### ${file.path}\n${file.content}`).join('\n\n');
     sections.push(
-      `Guidance from the repository itself, read at the head commit. Treat it as authoritative for the project's conventions and intent:\n\n${rendered}`,
+      `Guidance from the repository (files from the base commit, before this pull request). Treat it as authoritative for the project's conventions and intent:\n\n${rendered}`,
     );
   }
 

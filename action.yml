@@ -48,7 +48,7 @@ inputs:
     description: |
       Comma-separated list of repository files to include in the prompt as review
       context (read at the head commit), e.g. "AGENTS.md,README.md,CONTRIBUTING.md".
-      Missing or unreadable files are skipped. Set to "none" to disable.
+      Missing or unreadable files are skipped. An empty value or "none" disables.
     required: false
     default: 'AGENTS.md,README.md'
   context_max_chars:

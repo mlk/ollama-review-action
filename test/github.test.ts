@@ -44,6 +44,15 @@ function createOctokit(state: FakeState): ReturnType<typeof github.getOctokit> {
         listReviewComments,
         listFiles,
         listReviews: async () => ({ data: [] }),
+        get: async () => ({
+          data: {
+            head: { sha: 'sha-from-api', ref: 'feature' },
+            base: { ref: 'main', sha: 'base-sha-from-api' },
+            title: 'From the API',
+            body: 'Body',
+            user: { login: 'michael' },
+          },
+        }),
         deleteReviewComment: async (params: Record<string, unknown>) => {
           state.deleted.push(params);
           return {};
@@ -400,7 +409,7 @@ describe('getPullRequestContext', () => {
         title: 'A title',
         body: 'A body',
         head: { sha: 'sha', ref: 'feature' },
-        base: { ref: 'main' },
+        base: { ref: 'main', sha: 'base-sha' },
         user: { login: 'michael' },
       },
     } as typeof github.context.payload;
@@ -410,7 +419,22 @@ describe('getPullRequestContext', () => {
     assert.equal(context.number, 7);
     assert.equal(context.title, 'A title');
     assert.equal(context.headSha, 'sha');
+    assert.equal(context.baseSha, 'base-sha');
     assert.equal(context.author, 'michael');
+
+    github.context.payload = savedPayload;
+    process.env.GITHUB_REF = savedRef;
+  });
+
+  it('reads the pull request from the API when the payload does not carry it', async () => {
+    github.context.payload = { number: 7 } as typeof github.context.payload;
+
+    const context = await getPullRequestContext(createOctokit(emptyState()));
+
+    assert.equal(context.number, 7);
+    assert.equal(context.headSha, 'sha-from-api');
+    assert.equal(context.baseSha, 'base-sha-from-api');
+    assert.equal(context.title, 'From the API');
 
     github.context.payload = savedPayload;
     process.env.GITHUB_REF = savedRef;

@@ -110,7 +110,8 @@ describe('loadConfig', () => {
     assert.equal(config.failOn, 'none');
     assert.equal(config.postReview, true);
     assert.deepEqual(config.excludePaths, []);
-    assert.deepEqual(config.contextFiles, ['AGENTS.md', 'README.md']);
+    // The default list lives in action.yml; the loader only sees the input value.
+    assert.deepEqual(config.contextFiles, []);
     assert.equal(config.contextMaxChars, 12000);
     assert.equal(config.extraPrompt, '');
     assert.equal(config.reasoningEffort, '');

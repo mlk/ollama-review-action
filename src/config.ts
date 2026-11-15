@@ -45,13 +45,8 @@ function getBoolInput(name: string, fallback: boolean): boolean {
   throw new Error(`Input "${name}" must be a boolean, got "${raw}".`);
 }
 
-const DEFAULT_CONTEXT_FILES = ['AGENTS.md', 'README.md'];
-
 function getContextFiles(raw: string): string[] {
   const trimmed = raw.trim();
-  if (trimmed === '') {
-    return [...DEFAULT_CONTEXT_FILES];
-  }
   if (/^(none|off|false)$/i.test(trimmed)) {
     return [];
   }

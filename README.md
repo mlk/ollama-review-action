@@ -107,7 +107,7 @@ The action needs `pull-requests: write` and your `OLLAMA_API_KEY`, so it is wort
 | `max_diff_chars` | `60000` | Maximum characters of diff per request. Larger diffs are split across several requests. |
 | `max_files` | `50` | Maximum number of changed files to review. |
 | `exclude_paths` | - | Comma-separated glob patterns to skip, e.g. `**/*.lock,dist/**,docs/**`. |
-| `context_files` | `AGENTS.md,README.md` | Comma-separated repository files to include in the prompt as review context, read at the head commit. Missing files are skipped; set to `none` to disable. |
+| `context_files` | `AGENTS.md,README.md` | Comma-separated repository files to include in the prompt as review context, read at the base commit (so a pull request cannot inject its own guidance). Missing files are skipped; set to `none` to disable. |
 | `context_max_chars` | `12000` | Maximum characters per context file before it is truncated. |
 | `reasoning_effort` | model default | Thinking budget for reasoning models: `low`, `medium`, `high`. |
 | `temperature` | `0.2` | Sampling temperature. |
@@ -138,7 +138,7 @@ The review is always posted first; the job fails afterwards if the model reporte
 
 ## Customising the review
 
-The reviewer automatically reads `AGENTS.md` and `README.md` from the head commit of the pull request and treats them as project context, so the conventions you document there are applied without having to repeat them per review. Change the list with `context_files` (for example add `CONTRIBUTING.md`), or set it to `none` to disable.
+The reviewer automatically reads `AGENTS.md` and `README.md` from the base commit of the pull request and treats them as project context, so the conventions you document there are applied without having to repeat them per review. Change the list with `context_files` (for example add `CONTRIBUTING.md`), or set it to `none` to disable.
 
 You can also add one-off instructions with the `prompt` input:
 
@@ -154,7 +154,7 @@ You can also add one-off instructions with the `prompt` input:
 
 ## How it works
 
-1. The action fetches the changed files and their patches from the GitHub API and parses each hunk, tracking line numbers in both the old and new revision. It also reads the files listed in `context_files` (`AGENTS.md` and `README.md` by default) from the head commit to give the model the project's own guidance.
+1. The action fetches the changed files and their patches from the GitHub API and parses each hunk, tracking line numbers in both the old and new revision. It also reads the files listed in `context_files` (`AGENTS.md` and `README.md` by default) from the base commit - so a pull request cannot inject its own guidance - to give the model the project's own conventions.
 2. The diff is rendered with explicit line numbers, so the model can point at a specific line instead of guessing.
 3. Diffs larger than `max_diff_chars` are split into chunks and reviewed in separate requests; the findings are merged afterwards.
 4. The model returns JSON (`summary` + `findings`). The action parses it, tolerating markdown fences and reasoning blocks.

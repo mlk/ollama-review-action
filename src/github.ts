@@ -21,7 +21,7 @@ function ownerRepo(): { owner: string; repo: string } {
 
 interface PayloadPullRequest {
   head?: { sha?: string; ref?: string };
-  base?: { ref?: string };
+  base?: { ref?: string; sha?: string };
   title?: string;
   body?: string;
   user?: { login?: string };
@@ -54,6 +54,7 @@ export async function getPullRequestContext(
     return {
       number,
       headSha: String(pullRequest.head?.sha ?? ''),
+      baseSha: pullRequest.base?.sha,
       title: String(pullRequest.title ?? ''),
       body: String(pullRequest.body ?? ''),
       author: String(pullRequest.user?.login ?? 'unknown'),
@@ -66,6 +67,7 @@ export async function getPullRequestContext(
   return {
     number,
     headSha: data.head.sha,
+    baseSha: data.base.sha,
     title: data.title,
     body: data.body ?? '',
     author: data.user?.login ?? 'unknown',
@@ -78,9 +80,10 @@ export async function getPullRequestContext(
 const MAX_CONTEXT_FILE_CHARS = 12_000;
 
 /**
- * Reads files from the repository at the given ref (the PR head) so the
- * reviewer sees the project's own guidance. Missing or unreadable files are
- * skipped - they are context, never worth failing the review over.
+ * Reads files from the repository at the given ref (the base commit, so a
+ * contributor cannot steer the review by editing guidance in their own PR).
+ * Missing or unreadable files are skipped - they are context, never worth
+ * failing the review over.
  */
 export async function fetchContextFiles(
   octokit: ReturnType<typeof getOctokit>,
@@ -95,8 +98,12 @@ export async function fetchContextFiles(
     try {
       const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref });
 
-      if (Array.isArray(data) || data.type !== 'file' || !data.content) {
+      if (Array.isArray(data) || data.type !== 'file') {
         info(`Skipping context file "${path}": not a regular file.`);
+        continue;
+      }
+      if (!data.content) {
+        info(`Skipping context file "${path}": no content returned (likely exceeds the 1 MB contents API limit).`);
         continue;
       }
 

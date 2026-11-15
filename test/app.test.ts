@@ -171,7 +171,7 @@ beforeEach(() => {
       title: 'A title',
       body: 'A body',
       head: { sha: 'sha123', ref: 'feature' },
-      base: { ref: 'main' },
+      base: { ref: 'main', sha: 'base-sha' },
       user: { login: 'michael' },
     },
   } as typeof github.context.payload;

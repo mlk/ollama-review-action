@@ -62,6 +62,8 @@ export interface RepoContextFile {
 export interface PullRequestContext {
   number: number;
   headSha: string;
+  /** Commit the PR branch is based on, when the event/API provides it. */
+  baseSha?: string;
   title: string;
   body: string;
   author: string;
