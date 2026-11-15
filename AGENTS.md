@@ -69,10 +69,28 @@ The action is pinned to a full commit SHA in `README.md` and in `.github/workflo
 A SHA is immutable, which is the point - but it means a new release is not picked up on its own.
 CI fails if the two pins drift apart.
 
-Cutting a release is therefore two pull requests:
+There is one release tag, `v1`, and it is a *moving* annotated tag: it always points at the commit
+that consumers should be on. It is only bumped at release time, and it is never created per-fix.
+Consumers who pin a SHA (as our own docs recommend) never notice the tag moving; `v1` exists for
+people who prefer `uses: mlk/ollama-review-action@v1`. `package.json`'s `version` field is not used
+to drive releases.
 
-1. The change itself. Merge it, then tag the merge commit: `git tag -a v1 -m v1 && git push origin v1`.
-2. A pull request that moves both pins to the new commit.
+Cutting a release is therefore two pull requests plus one tag move:
+
+1. The change itself. Merge it, then move the tag to the merge commit **from an up-to-date `main`**
+   (tagging your local branch or a stale `main` tags the wrong commit):
+
+   ```bash
+   git fetch origin && git switch main && git pull
+   git tag -fa v1 -m v1          # -f is required once v1 exists; -a keeps it annotated
+   git push origin v1 --force
+   ```
+
+2. A pull request that moves both pins (`README.md` and `.github/workflows/self-review.yml`) to the
+   SHA the tag now points at: `gh api repos/{owner}/{repo}/commits/v1 --jq .sha`.
+
+The order matters: tag first, then move the pins, so the pins never point at a commit that is not
+released.
 
 ### Coverage is a floor, not a target
 
@@ -116,7 +134,7 @@ npm run coverage    # The unit tests plus the coverage report and the thresholds
 npm run build       # Bundle src/main.ts into dist/index.js
 ```
 
-Run `npm run all` before opening a pull request - it runs the same checks CI does (lint, typecheck, coverage, build). CI additionally verifies the bundle is complete (`verify:bundle`), that `dist/` matches `src/`, and that the pinned action SHA in `README.md` and `.github/workflows/self-review.yml` agree.
+Run `npm run all` before opening a pull request - it runs the lint, typecheck, coverage and build steps that CI also runs. CI additionally verifies the bundle is complete (`verify:bundle`), that `dist/` matches `src/`, and that the pinned action SHA in `README.md` and `.github/workflows/self-review.yml` agree.
 
 ## Development
 
