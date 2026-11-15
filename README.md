@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: mlk/ollama-review-action@8f3f01d74babc03ae18521a1122a0969e1793539 # v1
+      - uses: mlk/ollama-review-action@637b8047b5f317fe1576941dc98ee5475414c5f7 # v1
         with:
           model: glm-5.3
         env:
@@ -126,7 +126,7 @@ The action needs `pull-requests: write` and your `OLLAMA_API_KEY`, so it is wort
 ## Blocking a pull request
 
 ```yaml
-- uses: mlk/ollama-review-action@8f3f01d74babc03ae18521a1122a0969e1793539 # v1
+- uses: mlk/ollama-review-action@637b8047b5f317fe1576941dc98ee5475414c5f7 # v1
   with:
     model: glm-5.3
     fail_on: critical
@@ -143,7 +143,7 @@ The reviewer automatically reads `AGENTS.md` and `README.md` from the base commi
 You can also add one-off instructions with the `prompt` input:
 
 ```yaml
-- uses: mlk/ollama-review-action@8f3f01d74babc03ae18521a1122a0969e1793539 # v1
+- uses: mlk/ollama-review-action@637b8047b5f317fe1576941dc98ee5475414c5f7 # v1
   with:
     model: glm-5.3
     prompt: |
