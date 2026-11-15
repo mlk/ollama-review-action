@@ -6,6 +6,7 @@ import { chunkDiffs, renderDiff, truncate } from './diff';
 import {
   anchorFindings,
   fetchChangedFiles,
+  fetchContextFiles,
   getPullRequestContext,
   replaceInlineComments,
   upsertSummaryComment,
@@ -66,6 +67,29 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
     return;
   }
 
+  let contextFiles: Awaited<ReturnType<typeof fetchContextFiles>> = [];
+  if (config.contextFiles.length > 0) {
+    try {
+      // Guidance comes from the base commit: a pull request must not be able to
+      // steer its own review by editing guidance in the same diff. The PR's own
+      // edits to those files are still visible to the model through the diff.
+      contextFiles = await fetchContextFiles(
+        octokit,
+        config.contextFiles,
+        pullRequest.baseSha || pullRequest.baseRef,
+        config.contextMaxChars,
+      );
+    } catch (error) {
+      deps.warning(`Could not read repository context files: ${(error as Error).message}`);
+    }
+    if (contextFiles.length > 0) {
+      deps.info(
+        `Including ${contextFiles.length} context file(s): ${contextFiles.map((f) => f.path).join(', ')}`,
+      );
+    }
+  }
+
+
   const chunks = chunkDiffs(selected, config.maxDiffChars);
   deps.info(`Reviewing ${selected.length} file(s) in ${chunks.length} request(s).`);
 
@@ -76,7 +100,13 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
 
   for (const [index, chunk] of chunks.entries()) {
     const diffText = truncate(renderDiff(chunk), config.maxDiffChars);
-    const userPrompt = buildUserPrompt(pullRequest, diffText, config.extraPrompt, chunk.length);
+    const userPrompt = buildUserPrompt(
+      pullRequest,
+      diffText,
+      config.extraPrompt,
+      chunk.length,
+      contextFiles,
+    );
 
     const response = await deps.chat(
       {

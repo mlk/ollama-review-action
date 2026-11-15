@@ -12,6 +12,8 @@ const ENV_KEYS = [
   'INPUT_MAX_DIFF_CHARS',
   'INPUT_MAX_FILES',
   'INPUT_EXCLUDE_PATHS',
+  'INPUT_CONTEXT_FILES',
+  'INPUT_CONTEXT_MAX_CHARS',
   'INPUT_REASONING_EFFORT',
   'INPUT_TEMPERATURE',
   'INPUT_FAIL_ON',
@@ -108,6 +110,9 @@ describe('loadConfig', () => {
     assert.equal(config.failOn, 'none');
     assert.equal(config.postReview, true);
     assert.deepEqual(config.excludePaths, []);
+    // The default list lives in action.yml; the loader only sees the input value.
+    assert.deepEqual(config.contextFiles, []);
+    assert.equal(config.contextMaxChars, 12000);
     assert.equal(config.extraPrompt, '');
     assert.equal(config.reasoningEffort, '');
   });
@@ -174,5 +179,29 @@ describe('loadConfig', () => {
     baseEnv();
     process.env.INPUT_EXCLUDE_PATHS = ' **/*.lock , dist/** , ';
     assert.deepEqual(loadConfig().excludePaths, ['**/*.lock', 'dist/**']);
+  });
+
+  it('splits and trims context_files', () => {
+    baseEnv();
+    process.env.INPUT_CONTEXT_FILES = ' AGENTS.md , CONTRIBUTING.md ';
+    assert.deepEqual(loadConfig().contextFiles, ['AGENTS.md', 'CONTRIBUTING.md']);
+  });
+
+  it('parses context_max_chars', () => {
+    baseEnv();
+    process.env.INPUT_CONTEXT_MAX_CHARS = '4000';
+    assert.equal(loadConfig().contextMaxChars, 4000);
+  });
+
+  it('rejects a non-numeric context_max_chars', () => {
+    baseEnv();
+    process.env.INPUT_CONTEXT_MAX_CHARS = 'lots';
+    assert.throws(() => loadConfig(), /context_max_chars/);
+  });
+
+  it('disables context files when set to none', () => {
+    baseEnv();
+    process.env.INPUT_CONTEXT_FILES = 'none';
+    assert.deepEqual(loadConfig().contextFiles, []);
   });
 });

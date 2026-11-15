@@ -35982,6 +35982,21 @@ async function run(deps = exports.defaultDeps) {
         deps.info('Nothing to review after filtering.');
         return;
     }
+    let contextFiles = [];
+    if (config.contextFiles.length > 0) {
+        try {
+            // Guidance comes from the base commit: a pull request must not be able to
+            // steer its own review by editing guidance in the same diff. The PR's own
+            // edits to those files are still visible to the model through the diff.
+            contextFiles = await (0, github_2.fetchContextFiles)(octokit, config.contextFiles, pullRequest.baseSha || pullRequest.baseRef, config.contextMaxChars);
+        }
+        catch (error) {
+            deps.warning(`Could not read repository context files: ${error.message}`);
+        }
+        if (contextFiles.length > 0) {
+            deps.info(`Including ${contextFiles.length} context file(s): ${contextFiles.map((f) => f.path).join(', ')}`);
+        }
+    }
     const chunks = (0, diff_1.chunkDiffs)(selected, config.maxDiffChars);
     deps.info(`Reviewing ${selected.length} file(s) in ${chunks.length} request(s).`);
     const summaries = [];
@@ -35990,7 +36005,7 @@ async function run(deps = exports.defaultDeps) {
     let sawUsage = false;
     for (const [index, chunk] of chunks.entries()) {
         const diffText = (0, diff_1.truncate)((0, diff_1.renderDiff)(chunk), config.maxDiffChars);
-        const userPrompt = (0, prompt_1.buildUserPrompt)(pullRequest, diffText, config.extraPrompt, chunk.length);
+        const userPrompt = (0, prompt_1.buildUserPrompt)(pullRequest, diffText, config.extraPrompt, chunk.length, contextFiles);
         const response = await deps.chat({
             host: config.host,
             apiKey: config.apiKey,
@@ -36071,9 +36086,13 @@ async function run(deps = exports.defaultDeps) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DEFAULT_CONTEXT_MAX_CHARS = void 0;
 exports.loadConfig = loadConfig;
 const core_1 = __nccwpck_require__(7484);
 const types_1 = __nccwpck_require__(6141);
+/** Default per-file cap for context files, in characters. Kept in sync with the
+ * context_max_chars input default in action.yml. */
+exports.DEFAULT_CONTEXT_MAX_CHARS = 12_000;
 function getIntInput(name, fallback) {
     const raw = (0, core_1.getInput)(name).trim();
     if (raw === '') {
@@ -36097,6 +36116,16 @@ function getBoolInput(name, fallback) {
         return false;
     }
     throw new Error(`Input "${name}" must be a boolean, got "${raw}".`);
+}
+function getContextFiles(raw) {
+    const trimmed = raw.trim();
+    if (/^(none|off|false)$/i.test(trimmed)) {
+        return [];
+    }
+    return trimmed
+        .split(',')
+        .map((path) => path.trim())
+        .filter((path) => path !== '');
 }
 function loadConfig() {
     const model = (0, core_1.getInput)('model').trim();
@@ -36138,6 +36167,8 @@ function loadConfig() {
         maxDiffChars: getIntInput('max_diff_chars', 60000),
         maxFiles: getIntInput('max_files', 50),
         excludePaths,
+        contextFiles: getContextFiles((0, core_1.getInput)('context_files')),
+        contextMaxChars: getIntInput('context_max_chars', exports.DEFAULT_CONTEXT_MAX_CHARS),
         reasoningEffort: (0, core_1.getInput)('reasoning_effort').trim(),
         temperature,
         failOn: failOnRaw,
@@ -36337,6 +36368,7 @@ function truncate(text, maxChars) {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getPullRequestContext = getPullRequestContext;
+exports.fetchContextFiles = fetchContextFiles;
 exports.fetchChangedFiles = fetchChangedFiles;
 exports.upsertSummaryComment = upsertSummaryComment;
 exports.replaceInlineComments = replaceInlineComments;
@@ -36369,6 +36401,7 @@ async function getPullRequestContext(octokit) {
         return {
             number,
             headSha: String(pullRequest.head?.sha ?? ''),
+            baseSha: pullRequest.base?.sha,
             title: String(pullRequest.title ?? ''),
             body: String(pullRequest.body ?? ''),
             author: String(pullRequest.user?.login ?? 'unknown'),
@@ -36380,12 +36413,54 @@ async function getPullRequestContext(octokit) {
     return {
         number,
         headSha: data.head.sha,
+        baseSha: data.base.sha,
         title: data.title,
         body: data.body ?? '',
         author: data.user?.login ?? 'unknown',
         baseRef: data.base.ref,
         headRef: data.head.ref,
     };
+}
+/**
+ * Reads files from the repository at the given ref (the base commit, so a
+ * contributor cannot steer the review by editing guidance in their own PR).
+ * Missing or unreadable files are skipped - they are context, never worth
+ * failing the review over.
+ */
+async function fetchContextFiles(octokit, paths, ref, maxChars) {
+    const { owner, repo } = ownerRepo();
+    const files = [];
+    for (const path of paths) {
+        try {
+            const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref });
+            if (Array.isArray(data) || data.type !== 'file') {
+                (0, core_1.info)(`Skipping context file "${path}": not a regular file.`);
+                continue;
+            }
+            if (!data.content) {
+                (0, core_1.info)(`Skipping context file "${path}": no content returned (likely exceeds the 1 MB contents API limit).`);
+                continue;
+            }
+            let content = Buffer.from(data.content, 'base64').toString('utf8').trim();
+            if (content === '') {
+                continue;
+            }
+            if (content.length > maxChars) {
+                content = `${content.slice(0, maxChars)}\n[truncated]`;
+            }
+            files.push({ path, content });
+        }
+        catch (error) {
+            const status = error.status;
+            if (status === 404) {
+                (0, core_1.info)(`Context file "${path}" not found at ${ref.slice(0, 7)}; skipping.`);
+            }
+            else {
+                (0, core_1.warning)(`Could not read context file "${path}": ${error.message}`);
+            }
+        }
+    }
+    return files;
 }
 async function fetchChangedFiles(octokit, pullNumber) {
     const { owner, repo } = ownerRepo();
@@ -36891,7 +36966,7 @@ exports.OUTPUT_SCHEMA = `{
     }
   ]
 }`;
-function buildUserPrompt(context, diffText, extraPrompt, fileCount) {
+function buildUserPrompt(context, diffText, extraPrompt, fileCount, contextFiles = []) {
     const sections = [];
     sections.push([
         `Pull request #${context.number}: ${context.title}`,
@@ -36901,6 +36976,10 @@ function buildUserPrompt(context, diffText, extraPrompt, fileCount) {
         `Files in this chunk: ${fileCount}`,
     ].join('\n'));
     const description = context.body.trim();
+    if (contextFiles.length > 0) {
+        const rendered = contextFiles.map((file) => `### ${file.path}\n${file.content}`).join('\n\n');
+        sections.push(`Guidance from the repository (files from the base commit, before this pull request). Treat it as authoritative for the project's conventions and intent:\n\n${rendered}`);
+    }
     if (description !== '') {
         sections.push(`Description:\n${description}`);
     }

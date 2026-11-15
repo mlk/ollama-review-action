@@ -2,6 +2,10 @@ import { getInput } from '@actions/core';
 
 import { isSeverity, Severity } from './types';
 
+/** Default per-file cap for context files, in characters. Kept in sync with the
+ * context_max_chars input default in action.yml. */
+export const DEFAULT_CONTEXT_MAX_CHARS = 12_000;
+
 export interface Config {
   model: string;
   apiKey: string;
@@ -11,6 +15,8 @@ export interface Config {
   maxDiffChars: number;
   maxFiles: number;
   excludePaths: string[];
+  contextFiles: string[];
+  contextMaxChars: number;
   reasoningEffort: string;
   temperature: number;
   failOn: Severity | 'none';
@@ -41,6 +47,17 @@ function getBoolInput(name: string, fallback: boolean): boolean {
     return false;
   }
   throw new Error(`Input "${name}" must be a boolean, got "${raw}".`);
+}
+
+function getContextFiles(raw: string): string[] {
+  const trimmed = raw.trim();
+  if (/^(none|off|false)$/i.test(trimmed)) {
+    return [];
+  }
+  return trimmed
+    .split(',')
+    .map((path) => path.trim())
+    .filter((path) => path !== '');
 }
 
 export function loadConfig(): Config {
@@ -96,6 +113,8 @@ export function loadConfig(): Config {
     maxDiffChars: getIntInput('max_diff_chars', 60000),
     maxFiles: getIntInput('max_files', 50),
     excludePaths,
+    contextFiles: getContextFiles(getInput('context_files')),
+    contextMaxChars: getIntInput('context_max_chars', DEFAULT_CONTEXT_MAX_CHARS),
     reasoningEffort: getInput('reasoning_effort').trim(),
     temperature,
     failOn: failOnRaw as Severity | 'none',

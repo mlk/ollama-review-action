@@ -58,6 +58,23 @@ describe('buildUserPrompt', () => {
     assert.doesNotMatch(prompt, /Additional instructions/);
   });
 
+  it('includes repository context files when given', () => {
+    const prompt = buildUserPrompt(context, '', '', 1, [
+      { path: 'AGENTS.md', content: 'House style: never use var.' },
+      { path: 'README.md', content: 'A project about items.' },
+    ]);
+
+    assert.match(prompt, /AGENTS\.md/);
+    assert.match(prompt, /House style: never use var\./);
+    assert.match(prompt, /README\.md/);
+    assert.match(prompt, /A project about items\./);
+  });
+
+  it('omits the repository context section when no files are given', () => {
+    const prompt = buildUserPrompt(context, '', '', 1);
+    assert.doesNotMatch(prompt, /Guidance from the repository/);
+  });
+
   it('explains the line number annotation', () => {
     const prompt = buildUserPrompt(context, '', '', 1);
     assert.match(prompt, /line numbers of the new revision/);

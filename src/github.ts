@@ -2,7 +2,7 @@ import { info, warning } from '@actions/core';
 import { context, getOctokit } from '@actions/github';
 
 import { buildFileDiff } from './diff';
-import { FileDiff, Finding, PullRequestContext } from './types';
+import { FileDiff, Finding, PullRequestContext, RepoContextFile } from './types';
 
 export interface ReviewComment {
   path: string;
@@ -21,7 +21,7 @@ function ownerRepo(): { owner: string; repo: string } {
 
 interface PayloadPullRequest {
   head?: { sha?: string; ref?: string };
-  base?: { ref?: string };
+  base?: { ref?: string; sha?: string };
   title?: string;
   body?: string;
   user?: { login?: string };
@@ -54,6 +54,7 @@ export async function getPullRequestContext(
     return {
       number,
       headSha: String(pullRequest.head?.sha ?? ''),
+      baseSha: pullRequest.base?.sha,
       title: String(pullRequest.title ?? ''),
       body: String(pullRequest.body ?? ''),
       author: String(pullRequest.user?.login ?? 'unknown'),
@@ -66,12 +67,63 @@ export async function getPullRequestContext(
   return {
     number,
     headSha: data.head.sha,
+    baseSha: data.base.sha,
     title: data.title,
     body: data.body ?? '',
     author: data.user?.login ?? 'unknown',
     baseRef: data.base.ref,
     headRef: data.head.ref,
   };
+}
+
+/**
+ * Reads files from the repository at the given ref (the base commit, so a
+ * contributor cannot steer the review by editing guidance in their own PR).
+ * Missing or unreadable files are skipped - they are context, never worth
+ * failing the review over.
+ */
+export async function fetchContextFiles(
+  octokit: ReturnType<typeof getOctokit>,
+  paths: string[],
+  ref: string,
+  maxChars: number,
+): Promise<RepoContextFile[]> {
+  const { owner, repo } = ownerRepo();
+  const files: RepoContextFile[] = [];
+
+  for (const path of paths) {
+    try {
+      const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref });
+
+      if (Array.isArray(data) || data.type !== 'file') {
+        info(`Skipping context file "${path}": not a regular file.`);
+        continue;
+      }
+      if (!data.content) {
+        info(`Skipping context file "${path}": no content returned (likely exceeds the 1 MB contents API limit).`);
+        continue;
+      }
+
+      let content = Buffer.from(data.content, 'base64').toString('utf8').trim();
+      if (content === '') {
+        continue;
+      }
+      if (content.length > maxChars) {
+        content = `${content.slice(0, maxChars)}\n[truncated]`;
+      }
+
+      files.push({ path, content });
+    } catch (error) {
+      const status = (error as { status?: number }).status;
+      if (status === 404) {
+        info(`Context file "${path}" not found at ${ref.slice(0, 7)}; skipping.`);
+      } else {
+        warning(`Could not read context file "${path}": ${(error as Error).message}`);
+      }
+    }
+  }
+
+  return files;
 }
 
 export interface ChangedFile {
