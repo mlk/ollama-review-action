@@ -49,6 +49,57 @@ function getBoolInput(name: string, fallback: boolean): boolean {
   throw new Error(`Input "${name}" must be a boolean, got "${raw}".`);
 }
 
+/**
+ * The API key is sent as a bearer token to every request, so the host must be
+ * somewhere that token is safe to send. https:// is required, with the only
+ * exception of loopback addresses for local development.
+ */
+function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.localhost')) {
+    return true;
+  }
+  if (host === '::1' || host === '::ffff:127.0.0.1' || host === '::ffff:7f00:1') {
+    return true;
+  }
+  const octets = host.split('.');
+  if (octets.length !== 4) {
+    return false;
+  }
+  if (octets[0] !== '127') {
+    return false;
+  }
+  return octets.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+}
+
+function validateHost(raw: string): string {
+  const host = (raw.trim() || 'https://ollama.com').replace(/\/+$/, '');
+
+  let url: URL;
+  try {
+    url = new URL(host);
+  } catch {
+    throw new Error(`Input "ollama_host" is not a valid URL, got "${host}".`);
+  }
+
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error(`Input "ollama_host" must use https://, got "${url.protocol}//" in "${host}".`);
+  }
+
+  if (url.username || url.password) {
+    throw new Error(`Input "ollama_host" must not contain embedded credentials, got "${host}".`);
+  }
+
+  if (url.protocol === 'http:' && !isLoopbackHostname(url.hostname)) {
+    throw new Error(
+      `Input "ollama_host" must use https:// - plain http is only allowed for local development ` +
+        `(localhost, 127.0.0.0/8, [::1]), got "${host}".`,
+    );
+  }
+
+  return host;
+}
+
 function getContextFiles(raw: string): string[] {
   const trimmed = raw.trim();
   if (/^(none|off|false)$/i.test(trimmed)) {
@@ -77,7 +128,7 @@ export function loadConfig(): Config {
     );
   }
 
-  const host = (getInput('ollama_host').trim() || 'https://ollama.com').replace(/\/+$/, '');
+  const host = validateHost(getInput('ollama_host'));
 
   const token = getInput('github-token').trim() || (process.env.GITHUB_TOKEN ?? '').trim();
   if (token === '') {
