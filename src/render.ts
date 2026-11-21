@@ -1,7 +1,9 @@
 import { Finding, Severity, TokenUsage } from './types';
 
 export const MARKER_SUMMARY = '<!-- ollama-review-action:summary';
-export const MARKER_INLINE = '<!-- ollama-review-action:inline -->';
+// Prefix shared by every marker this action writes into an inline review comment.
+// Comments may carry attributes, e.g. `<!-- ollama-review-action:inline severity=major -->`.
+export const MARKER_INLINE = '<!-- ollama-review-action:inline';
 
 export function severityEmoji(severity: Severity): string {
   switch (severity) {
@@ -57,9 +59,45 @@ export function renderFindingBody(finding: Finding): string {
     parts.push('');
   }
 
-  parts.push(MARKER_INLINE);
+  parts.push(`${MARKER_INLINE} severity=${finding.severity} -->`);
 
   return parts.join('\n').trimEnd();
+}
+
+const INLINE_SEVERITY_RE = /<!--\s*ollama-review-action:inline[^>]*?\bseverity=(blocker|critical|major|minor|nit)\b/;
+// Fallback for comments posted before the marker carried the severity: the
+// bolded header line is rendered as `**<emoji> \`severity\` - title**`.
+const HEADER_SEVERITY_RE = /\*\*[^`\n]*`(blocker|critical|major|minor|nit)`/;
+
+/**
+ * Reads the severity out of an inline comment posted by this action. Returns
+ * undefined when it cannot be determined - callers should treat unknown as
+ * non-blocking rather than failing the gate on a comment they cannot parse.
+ */
+export function parseInlineSeverity(body: string): Severity | undefined {
+  const marker = INLINE_SEVERITY_RE.exec(body);
+  if (marker?.[1]) {
+    return marker[1] as Severity;
+  }
+  const header = HEADER_SEVERITY_RE.exec(body);
+  return header?.[1] as Severity | undefined;
+}
+
+/** Parses the marker written by {@link renderSummaryBody}, returning the head SHA that was reviewed, if any. */
+export function parseSummarySha(body: string): string | undefined {
+  const marker = new RegExp(`${MARKER_SUMMARY}[^>]*-->`).exec(body);
+  if (!marker) {
+    return undefined;
+  }
+  const sha = /:sha=([^\s>]{6,64})/i.exec(marker[0]);
+  return sha?.[1];
+}
+
+export interface SummaryBodyOptions {
+  /** Head commit this review covers. Recorded in the marker so the next run knows where to start from. */
+  headSha?: string;
+  /** Set when only some files were re-reviewed; adds a note explaining the scope. */
+  incremental?: { since: string; files: number };
 }
 
 export function renderSummaryBody(
@@ -68,15 +106,25 @@ export function renderSummaryBody(
   findings: Finding[],
   unanchored: Finding[],
   usage?: TokenUsage,
+  options: SummaryBodyOptions = {},
 ): string {
   const lines: string[] = [];
 
-  lines.push(`${MARKER_SUMMARY}:model=${model} -->`);
+  const marker = options.headSha ? `:model=${model}:sha=${options.headSha}` : `:model=${model}`;
+  lines.push(`${MARKER_SUMMARY}${marker} -->`);
   lines.push('');
   lines.push('## Ollama review');
   lines.push('');
   lines.push(summary);
   lines.push('');
+
+  if (options.incremental) {
+    const { since, files } = options.incremental;
+    lines.push(
+      `_Incremental review: only the ${files} file${files === 1 ? '' : 's'} that changed since \`${since.slice(0, 7)}\` were re-reviewed; findings on unchanged files are from the previous review._`,
+    );
+    lines.push('');
+  }
 
   if (unanchored.length > 0) {
     lines.push('### Other observations');

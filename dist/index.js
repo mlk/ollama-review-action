@@ -35966,21 +35966,90 @@ exports.defaultDeps = {
         await core_1.summary.addRaw(body).write();
     },
 };
+function worstSeverity(severities) {
+    let worst;
+    for (const severity of severities) {
+        if (!worst || types_1.SEVERITIES.indexOf(severity) > types_1.SEVERITIES.indexOf(worst)) {
+            worst = severity;
+        }
+    }
+    return worst;
+}
 async function run(deps = exports.defaultDeps) {
     const config = deps.loadConfig();
     const octokit = deps.getOctokit(config.token);
+    const applyFailGate = (severities) => {
+        const worst = worstSeverity(severities);
+        const failed = worst !== undefined && config.failOn !== 'none' && (0, types_1.meetsThreshold)(worst, config.failOn);
+        deps.setOutput('failed', failed ? 'true' : 'false');
+        if (failed && worst) {
+            deps.setFailed(`The review found a ${worst} severity issue (fail_on=${config.failOn}).`);
+        }
+    };
     deps.info(`Reviewing pull request with model "${config.model}" via ${config.host}.`);
     const pullRequest = await (0, github_2.getPullRequestContext)(octokit);
     deps.info(`PR #${pullRequest.number}: ${pullRequest.title}`);
     const files = await (0, github_2.fetchChangedFiles)(octokit, pullRequest.number);
     if (files.length === 0) {
         deps.info('No changed files to review.');
+        applyFailGate(await (0, github_2.fetchCarriedInlineSeverities)(octokit, pullRequest.number, render_1.MARKER_INLINE));
         return;
     }
     const selected = (0, select_1.selectFiles)(files, config.excludePaths, config.maxFiles);
     if (selected.length === 0) {
         deps.info('Nothing to review after filtering.');
+        applyFailGate(await (0, github_2.fetchCarriedInlineSeverities)(octokit, pullRequest.number, render_1.MARKER_INLINE));
         return;
+    }
+    // Narrow to the files that changed since the last review, so a synchronize
+    // event does not re-review (and re-bill) the whole pull request. Findings
+    // for the skipped files are already posted on the pull request, so nothing
+    // is lost by not re-sending them to the model.
+    const shortSha = (sha) => sha.slice(0, 7);
+    let reviewed = selected;
+    let incrementalSince;
+    if (config.incremental) {
+        const previous = await (0, github_2.fetchPreviousReviewSha)(octokit, pullRequest.number, render_1.MARKER_SUMMARY);
+        if (!previous) {
+            deps.info('No previous review found for this pull request - doing a full review.');
+        }
+        else if (previous === pullRequest.headSha) {
+            deps.info(`The head commit has not changed since the last review (${shortSha(previous)}); nothing to do.`);
+            applyFailGate(await (0, github_2.fetchCarriedInlineSeverities)(octokit, pullRequest.number, render_1.MARKER_INLINE));
+            return;
+        }
+        else {
+            try {
+                const compare = await (0, github_2.compareCommitsSince)(octokit, previous, pullRequest.headSha);
+                if (!compare.canIncrement) {
+                    deps.info(compare.reason === 'truncated'
+                        ? `The comparison lists ${compare.files.length} or more files and may be incomplete; falling back to a full review.`
+                        : `The branch history was rewritten since ${shortSha(previous)} (force-push or rebase); falling back to a full review.`);
+                }
+                else {
+                    const changedPaths = new Set();
+                    for (const file of compare.files) {
+                        changedPaths.add(file.filename);
+                        if (file.previous_filename) {
+                            changedPaths.add(file.previous_filename);
+                        }
+                    }
+                    const narrowed = selected.filter((diff) => changedPaths.has(diff.path) ||
+                        (diff.previousPath !== undefined && changedPaths.has(diff.previousPath)));
+                    if (narrowed.length === 0) {
+                        deps.info(`No reviewed files changed since the last review (${shortSha(previous)}); leaving the existing review in place.`);
+                        applyFailGate(await (0, github_2.fetchCarriedInlineSeverities)(octokit, pullRequest.number, render_1.MARKER_INLINE));
+                        return;
+                    }
+                    incrementalSince = previous;
+                    deps.info(`Incremental review: re-reviewing ${narrowed.length} of ${selected.length} file(s) that changed since ${shortSha(previous)}.`);
+                    reviewed = narrowed;
+                }
+            }
+            catch (error) {
+                deps.info(`Could not compare with the previous review at ${shortSha(previous)} (${error.message}); falling back to a full review.`);
+            }
+        }
     }
     let contextFiles = [];
     if (config.contextFiles.length > 0) {
@@ -35998,8 +36067,8 @@ async function run(deps = exports.defaultDeps) {
         }
     }
     const systemPrompt = (0, prompt_1.systemPromptFor)(config.profile);
-    const chunks = (0, diff_1.chunkDiffs)(selected, config.maxDiffChars);
-    deps.info(`Reviewing ${selected.length} file(s) in ${chunks.length} request(s).`);
+    const chunks = (0, diff_1.chunkDiffs)(reviewed, config.maxDiffChars);
+    deps.info(`Reviewing ${reviewed.length} file(s) in ${chunks.length} request(s).`);
     const summaries = [];
     const findings = [];
     const totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -36034,9 +36103,14 @@ async function run(deps = exports.defaultDeps) {
         }
     }
     const summary = summaries.join('\n\n') || 'The model did not return a summary for this pull request.';
-    const { anchored, unanchored } = (0, github_2.anchorFindings)(findings, selected);
+    const { anchored, unanchored } = (0, github_2.anchorFindings)(findings, reviewed);
     deps.info(`${anchored.length} anchored finding(s), ${unanchored.length} unanchored.`);
-    const body = (0, render_1.renderSummaryBody)(config.model, summary, anchored, unanchored, sawUsage ? totalUsage : undefined);
+    const body = (0, render_1.renderSummaryBody)(config.model, summary, anchored, unanchored, sawUsage ? totalUsage : undefined, {
+        headSha: pullRequest.headSha || undefined,
+        ...(incrementalSince
+            ? { incremental: { since: incrementalSince, files: reviewed.length } }
+            : {}),
+    });
     const comments = anchored.map((finding) => {
         const comment = {
             path: finding.path,
@@ -36051,13 +36125,24 @@ async function run(deps = exports.defaultDeps) {
         return comment;
     });
     let summaryCommentId = '';
+    // Severities of the findings that are kept on the pull request from earlier
+    // runs (files not re-reviewed). The gate has to count those alongside this
+    // run's findings, or a carried-over blocker would stop failing the check.
+    let carriedSeverities = [];
     if (config.postReview) {
         summaryCommentId = String(await (0, github_2.upsertSummaryComment)(octokit, pullRequest.number, body, render_1.MARKER_SUMMARY));
-        await (0, github_2.replaceInlineComments)(octokit, pullRequest.number, comments, render_1.MARKER_INLINE, pullRequest.headSha);
+        // Paths whose previous inline comments are replaced with this run's findings:
+        // exactly the files that were re-reviewed (plus their old names on renames).
+        const reReviewedPaths = incrementalSince
+            ? new Set(reviewed.flatMap((diff) => diff.previousPath ? [diff.path, diff.previousPath] : [diff.path]))
+            : undefined;
+        const result = await (0, github_2.replaceInlineComments)(octokit, pullRequest.number, comments, render_1.MARKER_INLINE, pullRequest.headSha, reReviewedPaths);
+        carriedSeverities = result.carriedSeverities;
     }
     else {
         deps.info('post_review is false - not posting to GitHub.');
         deps.info(body);
+        carriedSeverities = await (0, github_2.fetchCarriedInlineSeverities)(octokit, pullRequest.number, render_1.MARKER_INLINE);
     }
     try {
         await deps.writeSummary(body);
@@ -36068,14 +36153,7 @@ async function run(deps = exports.defaultDeps) {
     deps.setOutput('summary', summary);
     deps.setOutput('findings_count', anchored.length);
     deps.setOutput('comment_id', summaryCommentId);
-    const worst = anchored
-        .map((finding) => finding.severity)
-        .sort((a, b) => types_1.SEVERITIES.indexOf(b) - types_1.SEVERITIES.indexOf(a))[0];
-    const failed = worst !== undefined && config.failOn !== 'none' && (0, types_1.meetsThreshold)(worst, config.failOn);
-    deps.setOutput('failed', failed ? 'true' : 'false');
-    if (failed) {
-        deps.setFailed(`The review found a ${worst} severity issue (fail_on=${config.failOn}).`);
-    }
+    applyFailGate([...anchored.map((finding) => finding.severity), ...carriedSeverities]);
 }
 
 
@@ -36223,6 +36301,7 @@ function loadConfig() {
         profile: profileRaw,
         failOn: failOnRaw,
         postReview: getBoolInput('post_review', true),
+        incremental: getBoolInput('incremental', true),
     };
 }
 
@@ -36417,15 +36496,20 @@ function truncate(text, maxChars) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.COMPARE_FILE_LIMIT = void 0;
 exports.getPullRequestContext = getPullRequestContext;
 exports.fetchContextFiles = fetchContextFiles;
 exports.fetchChangedFiles = fetchChangedFiles;
+exports.fetchPreviousReviewSha = fetchPreviousReviewSha;
+exports.compareCommitsSince = compareCommitsSince;
 exports.upsertSummaryComment = upsertSummaryComment;
 exports.replaceInlineComments = replaceInlineComments;
+exports.fetchCarriedInlineSeverities = fetchCarriedInlineSeverities;
 exports.anchorFindings = anchorFindings;
 const core_1 = __nccwpck_require__(7484);
 const github_1 = __nccwpck_require__(3228);
 const diff_1 = __nccwpck_require__(9952);
+const render_1 = __nccwpck_require__(7055);
 function ownerRepo() {
     const owner = github_1.context.repo.owner;
     const repo = github_1.context.repo.repo;
@@ -36538,6 +36622,62 @@ async function authenticatedLogin(octokit) {
         return undefined;
     }
 }
+/** Finds the bot's own sticky comment carrying `marker`, if there is one. */
+async function findStickyComment(octokit, pullNumber, marker) {
+    const { owner, repo } = ownerRepo();
+    const login = await authenticatedLogin(octokit);
+    const existing = await octokit.paginate(octokit.rest.issues.listComments, {
+        owner,
+        repo,
+        issue_number: pullNumber,
+        per_page: 100,
+    });
+    return existing
+        .filter((comment) => comment.body?.includes(marker) && (login === undefined || comment.user?.login === login))
+        .pop();
+}
+/**
+ * Returns the head commit SHA recorded in the sticky summary comment from the
+ * previous run, or undefined when there is nothing to compare against (first
+ * run, or the marker predates SHA recording).
+ */
+async function fetchPreviousReviewSha(octokit, pullNumber, marker) {
+    const previous = await findStickyComment(octokit, pullNumber, marker);
+    if (!previous?.body) {
+        return undefined;
+    }
+    return (0, render_1.parseSummarySha)(previous.body);
+}
+/** The compare API returns at most this many files; at the cap the list may be incomplete. */
+exports.COMPARE_FILE_LIMIT = 300;
+/**
+ * Compares two commits on the same branch. Used to find what changed since the
+ * last review. A `basehead` of `base...head` compares the merge base against
+ * `head`, so `behind_by > 0` means the PR branch no longer contains `baseSha`
+ * - i.e. it was force-pushed or rebased, and the old review no longer maps
+ * onto the current history.
+ */
+async function compareCommitsSince(octokit, baseSha, headSha) {
+    const { owner, repo } = ownerRepo();
+    const { data } = await octokit.rest.repos.compareCommitsWithBasehead({
+        owner,
+        repo,
+        basehead: `${baseSha}...${headSha}`,
+    });
+    const behindBy = typeof data.behind_by === 'number' ? data.behind_by : 1;
+    const files = (data.files ?? []).map((file) => ({
+        filename: file.filename,
+        previous_filename: file.previous_filename ?? undefined,
+    }));
+    if (behindBy !== 0) {
+        return { canIncrement: false, reason: 'rewritten', files };
+    }
+    if (files.length >= exports.COMPARE_FILE_LIMIT) {
+        // The cap leaves no way to know whether files were dropped from the list.
+        return { canIncrement: false, reason: 'truncated', files };
+    }
+    return { canIncrement: true, files };
+}
 /**
  * Posts the review summary as a sticky pull request comment.
  *
@@ -36547,16 +36687,7 @@ async function authenticatedLogin(octokit) {
  */
 async function upsertSummaryComment(octokit, pullNumber, body, marker) {
     const { owner, repo } = ownerRepo();
-    const login = await authenticatedLogin(octokit);
-    const existing = await octokit.paginate(octokit.rest.issues.listComments, {
-        owner,
-        repo,
-        issue_number: pullNumber,
-        per_page: 100,
-    });
-    const previous = existing
-        .filter((comment) => comment.body?.includes(marker) && (login === undefined || comment.user?.login === login))
-        .pop();
+    const previous = await findStickyComment(octokit, pullNumber, marker);
     if (previous) {
         const { data } = await octokit.rest.issues.updateComment({
             owner,
@@ -36576,13 +36707,10 @@ async function upsertSummaryComment(octokit, pullNumber, body, marker) {
     (0, core_1.info)(`Created summary comment ${data.id}.`);
     return data.id;
 }
-/**
- * Removes the inline comments this action left on a previous run and posts the
- * current findings.
- */
-async function replaceInlineComments(octokit, pullNumber, comments, marker, headSha) {
+async function replaceInlineComments(octokit, pullNumber, comments, marker, headSha, onlyPaths) {
     const { owner, repo } = ownerRepo();
     const login = await authenticatedLogin(octokit);
+    let carriedSeverities = [];
     try {
         const previous = await octokit.paginate(octokit.rest.pulls.listReviewComments, {
             owner,
@@ -36590,7 +36718,15 @@ async function replaceInlineComments(octokit, pullNumber, comments, marker, head
             pull_number: pullNumber,
             per_page: 100,
         });
-        const stale = previous.filter((comment) => comment.body?.includes(marker) && (login === undefined || comment.user?.login === login));
+        const mine = previous.filter((comment) => comment.body?.includes(marker) && (login === undefined || comment.user?.login === login));
+        const stale = onlyPaths
+            ? mine.filter((comment) => (comment.path ? onlyPaths.has(comment.path) : true))
+            : mine;
+        const staleIds = new Set(stale.map((comment) => comment.id));
+        const kept = mine.filter((comment) => !staleIds.has(comment.id));
+        carriedSeverities = kept
+            .map((comment) => (0, render_1.parseInlineSeverity)(comment.body ?? ''))
+            .filter((severity) => severity !== undefined);
         for (const comment of stale) {
             try {
                 await octokit.rest.pulls.deleteReviewComment({
@@ -36605,6 +36741,9 @@ async function replaceInlineComments(octokit, pullNumber, comments, marker, head
         }
         if (stale.length > 0) {
             (0, core_1.info)(`Removed ${stale.length} inline comment(s) from the previous run.`);
+        }
+        if (kept.length > 0) {
+            (0, core_1.info)(`Kept ${kept.length} inline comment(s) on files not re-reviewed in this run.`);
         }
     }
     catch (error) {
@@ -36628,7 +36767,33 @@ async function replaceInlineComments(octokit, pullNumber, comments, marker, head
         await octokit.rest.pulls.createReviewComment(payload);
     }
     (0, core_1.info)(`Posted ${comments.length} inline comment(s).`);
-    return comments.length;
+    return { posted: comments.length, carriedSeverities };
+}
+/**
+ * Severities of the inline comments this action left on the pull request that
+ * are still standing - used when a run posts nothing new but the `fail_on`
+ * gate still has to account for findings from earlier runs.
+ */
+async function fetchCarriedInlineSeverities(octokit, pullNumber, marker) {
+    const { owner, repo } = ownerRepo();
+    const login = await authenticatedLogin(octokit);
+    try {
+        const comments = await octokit.paginate(octokit.rest.pulls.listReviewComments, {
+            owner,
+            repo,
+            pull_number: pullNumber,
+            per_page: 100,
+        });
+        return comments
+            .filter((comment) => comment.body?.includes(marker) &&
+            (login === undefined || comment.user?.login === login))
+            .map((comment) => (0, render_1.parseInlineSeverity)(comment.body ?? ''))
+            .filter((severity) => severity !== undefined);
+    }
+    catch (error) {
+        (0, core_1.warning)(`Could not list previous inline comments: ${error.message}`);
+        return [];
+    }
 }
 /**
  * Maps model findings onto files and lines that GitHub actually accepts a
@@ -37177,9 +37342,13 @@ exports.MARKER_INLINE = exports.MARKER_SUMMARY = void 0;
 exports.severityEmoji = severityEmoji;
 exports.isValidSuggestion = isValidSuggestion;
 exports.renderFindingBody = renderFindingBody;
+exports.parseInlineSeverity = parseInlineSeverity;
+exports.parseSummarySha = parseSummarySha;
 exports.renderSummaryBody = renderSummaryBody;
 exports.MARKER_SUMMARY = '<!-- ollama-review-action:summary';
-exports.MARKER_INLINE = '<!-- ollama-review-action:inline -->';
+// Prefix shared by every marker this action writes into an inline review comment.
+// Comments may carry attributes, e.g. `<!-- ollama-review-action:inline severity=major -->`.
+exports.MARKER_INLINE = '<!-- ollama-review-action:inline';
 function severityEmoji(severity) {
     switch (severity) {
         case 'blocker':
@@ -37229,17 +37398,49 @@ function renderFindingBody(finding) {
         }
         parts.push('');
     }
-    parts.push(exports.MARKER_INLINE);
+    parts.push(`${exports.MARKER_INLINE} severity=${finding.severity} -->`);
     return parts.join('\n').trimEnd();
 }
-function renderSummaryBody(model, summary, findings, unanchored, usage) {
+const INLINE_SEVERITY_RE = /<!--\s*ollama-review-action:inline[^>]*?\bseverity=(blocker|critical|major|minor|nit)\b/;
+// Fallback for comments posted before the marker carried the severity: the
+// bolded header line is rendered as `**<emoji> \`severity\` - title**`.
+const HEADER_SEVERITY_RE = /\*\*[^`\n]*`(blocker|critical|major|minor|nit)`/;
+/**
+ * Reads the severity out of an inline comment posted by this action. Returns
+ * undefined when it cannot be determined - callers should treat unknown as
+ * non-blocking rather than failing the gate on a comment they cannot parse.
+ */
+function parseInlineSeverity(body) {
+    const marker = INLINE_SEVERITY_RE.exec(body);
+    if (marker?.[1]) {
+        return marker[1];
+    }
+    const header = HEADER_SEVERITY_RE.exec(body);
+    return header?.[1];
+}
+/** Parses the marker written by {@link renderSummaryBody}, returning the head SHA that was reviewed, if any. */
+function parseSummarySha(body) {
+    const marker = new RegExp(`${exports.MARKER_SUMMARY}[^>]*-->`).exec(body);
+    if (!marker) {
+        return undefined;
+    }
+    const sha = /:sha=([^\s>]{6,64})/i.exec(marker[0]);
+    return sha?.[1];
+}
+function renderSummaryBody(model, summary, findings, unanchored, usage, options = {}) {
     const lines = [];
-    lines.push(`${exports.MARKER_SUMMARY}:model=${model} -->`);
+    const marker = options.headSha ? `:model=${model}:sha=${options.headSha}` : `:model=${model}`;
+    lines.push(`${exports.MARKER_SUMMARY}${marker} -->`);
     lines.push('');
     lines.push('## Ollama review');
     lines.push('');
     lines.push(summary);
     lines.push('');
+    if (options.incremental) {
+        const { since, files } = options.incremental;
+        lines.push(`_Incremental review: only the ${files} file${files === 1 ? '' : 's'} that changed since \`${since.slice(0, 7)}\` were re-reviewed; findings on unchanged files are from the previous review._`);
+        lines.push('');
+    }
     if (unanchored.length > 0) {
         lines.push('### Other observations');
         lines.push('');

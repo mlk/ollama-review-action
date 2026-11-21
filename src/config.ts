@@ -23,6 +23,7 @@ export interface Config {
   profile: ReviewProfile;
   failOn: Severity | 'none';
   postReview: boolean;
+  incremental: boolean;
 }
 
 function getIntInput(name: string, fallback: number): number {
@@ -178,5 +179,6 @@ export function loadConfig(): Config {
     profile: profileRaw,
     failOn: failOnRaw as Severity | 'none',
     postReview: getBoolInput('post_review', true),
+    incremental: getBoolInput('incremental', true),
   };
 }

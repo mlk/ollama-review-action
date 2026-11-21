@@ -19,6 +19,13 @@ interface Recorded {
   prompts: string[];
   systemPrompts: string[];
   refs: Array<string | undefined>;
+  compareCalls: string[];
+}
+
+interface Seed {
+  issueComments?: Array<Record<string, unknown>>;
+  reviewComments?: Array<Record<string, unknown>>;
+  compare?: { behind_by?: number; files?: Array<{ filename: string; previous_filename?: string }> } | Error;
 }
 
 let recorded: Recorded;
@@ -35,6 +42,7 @@ function emptyRecorded(): Recorded {
     prompts: [],
     systemPrompts: [],
     refs: [],
+    compareCalls: [],
   };
 }
 
@@ -55,6 +63,7 @@ function config(overrides: Partial<Config> = {}): Config {
     profile: 'default',
     failOn: 'none',
     postReview: true,
+    incremental: true,
     ...overrides,
   };
 }
@@ -63,9 +72,10 @@ function makeOctokit(
   state: Recorded,
   files: Array<Record<string, unknown>>,
   contextFiles: Record<string, string> = {},
+  seed: Seed = {},
 ): Octokit {
-  const listIssueComments = async () => ({ data: [] });
-  const listReviewComments = async () => ({ data: [] });
+  const listIssueComments = async () => ({ data: seed.issueComments ?? [] });
+  const listReviewComments = async () => ({ data: seed.reviewComments ?? [] });
   const listFiles = async () => ({ data: files });
   const getContent = async (params: { path: string; ref?: string }) => {
     state.refs.push(params.ref);
@@ -115,6 +125,23 @@ function makeOctokit(
       },
       repos: {
         getContent,
+        compareCommitsWithBasehead: async (params: { basehead: string }) => {
+          state.compareCalls.push(params.basehead);
+          const compare = seed.compare;
+          if (!compare) {
+            throw new Error('compareCommitsWithBasehead was not stubbed');
+          }
+          if (compare instanceof Error) {
+            throw compare;
+          }
+          return {
+            data: {
+              status: (compare.behind_by ?? 0) > 0 ? 'diverged' : 'ahead',
+              behind_by: compare.behind_by ?? 0,
+              files: compare.files ?? [],
+            },
+          };
+        },
       },
     },
   } as unknown as Octokit;
@@ -125,10 +152,11 @@ function deps(
   overrides: Partial<Deps> = {},
   files: Array<Record<string, unknown>> = [],
   contextFiles: Record<string, string> = {},
+  seed: Seed = {},
 ): Deps {
   return {
     loadConfig: () => config(),
-    getOctokit: () => makeOctokit(state, files, contextFiles),
+    getOctokit: () => makeOctokit(state, files, contextFiles, seed),
     chat: async (_options, messages) => {
       state.prompts.push(messages[1]?.content ?? '');
       state.systemPrompts.push(messages[0]?.content ?? '');
@@ -472,5 +500,258 @@ describe('run', () => {
 
     assert.match(recorded.warnings[0] ?? '', /Could not write the job summary/);
     assert.equal(recorded.failures.length, 0);
+  });
+
+  describe('incremental re-review', () => {
+    const twoFiles = [
+      {
+        filename: 'src/app.ts',
+        status: 'modified',
+        additions: 1,
+        deletions: 0,
+        patch: '@@ -1,3 +1,3 @@\n a\n+b\n c',
+      },
+      {
+        filename: 'src/other.ts',
+        status: 'modified',
+        additions: 1,
+        deletions: 0,
+        patch: '@@ -1,3 +1,3 @@\n x\n+y\n z',
+      },
+    ];
+    const previousSha = '0123456789abcdef0123456789abcdef01234567';
+    const previousSummary = {
+      id: 42,
+      body: `<!-- ollama-review-action:summary:model=glm-5.3:sha=${previousSha} -->\n## Ollama review\n`,
+      user: { login: 'bot' },
+    };
+
+    it('records the head sha in the summary comment marker', async () => {
+      await run(deps(recorded, {}, oneFile));
+
+      const summary = recorded.created.find((call) => 'issue_number' in call);
+      assert.match(String(summary?.body), /:sha=sha123/);
+    });
+
+    it('does a full review on the first run without calling compare', async () => {
+      const logs: string[] = [];
+
+      await run(
+        deps(recorded, { info: (message) => logs.push(message) }, twoFiles),
+      );
+
+      assert.equal(recorded.compareCalls.length, 0);
+      assert.ok(logs.some((line) => /full review/i.test(line)));
+      const prompt = recorded.prompts.join('\n');
+      assert.match(prompt, /src\/app\.ts/);
+      assert.match(prompt, /src\/other\.ts/);
+    });
+
+    it('re-reviews only the files that changed since the last review', async () => {
+      const seed = {
+        issueComments: [previousSummary],
+        reviewComments: [
+          { id: 11, body: '<!-- ollama-review-action:inline -->old finding', path: 'src/app.ts', user: { login: 'bot' } },
+          { id: 12, body: '<!-- ollama-review-action:inline -->old finding', path: 'src/other.ts', user: { login: 'bot' } },
+        ],
+        compare: { behind_by: 0, files: [{ filename: 'src/app.ts' }] },
+      };
+
+      await run(deps(recorded, {}, twoFiles, {}, seed));
+
+      const prompt = recorded.prompts.join('\n');
+      assert.match(prompt, /src\/app\.ts/);
+      assert.doesNotMatch(prompt, /src\/other\.ts/);
+
+      // Only the stale comment on the re-reviewed file is replaced.
+      assert.deepEqual(recorded.deleted.map((call) => call.comment_id), [11]);
+
+      const summary = recorded.updated[0];
+      assert.ok(summary, 'expected the summary comment to be updated in place');
+      assert.match(String(summary?.body), /Incremental review/);
+      assert.match(String(summary?.body), /:sha=sha123/);
+    });
+
+    it('falls back to a full review when the branch was force-pushed', async () => {
+      const logs: string[] = [];
+      const seed = {
+        issueComments: [previousSummary],
+        compare: { behind_by: 2, files: [{ filename: 'src/app.ts' }] },
+      };
+
+      await run(
+        deps(recorded, { info: (message) => logs.push(message) }, twoFiles, {}, seed),
+      );
+
+      const prompt = recorded.prompts.join('\n');
+      assert.match(prompt, /src\/other\.ts/);
+      assert.equal(recorded.compareCalls.length, 1);
+      assert.ok(logs.some((line) => /rewritten/i.test(line)));
+    });
+
+    it('falls back to a full review when the compare fails', async () => {
+      const logs: string[] = [];
+      const seed = {
+        issueComments: [previousSummary],
+        compare: new Error('Not Found'),
+      };
+
+      await run(
+        deps(recorded, { info: (message) => logs.push(message) }, twoFiles, {}, seed),
+      );
+
+      const prompt = recorded.prompts.join('\n');
+      assert.match(prompt, /src\/other\.ts/);
+      assert.ok(logs.some((line) => /falling back to a full review/i.test(line)));
+    });
+
+    it('does not call compare when the input is disabled', async () => {
+      const seed = {
+        issueComments: [previousSummary],
+        compare: { behind_by: 0, files: [{ filename: 'src/app.ts' }] },
+      };
+
+      await run(
+        deps(recorded, { loadConfig: () => config({ incremental: false }) }, twoFiles, {}, seed),
+      );
+
+      assert.equal(recorded.compareCalls.length, 0);
+      assert.match(recorded.prompts.join('\n'), /src\/other\.ts/);
+    });
+
+    it('does nothing when no reviewed file changed since the last review', async () => {
+      const logs: string[] = [];
+      const seed = {
+        issueComments: [previousSummary],
+        compare: { behind_by: 0, files: [] },
+      };
+
+      await run(
+        deps(recorded, { info: (message) => logs.push(message) }, twoFiles, {}, seed),
+      );
+
+      assert.equal(recorded.prompts.length, 0);
+      assert.equal(recorded.created.length, 0);
+      assert.ok(logs.some((line) => /leaving the existing review in place/i.test(line)));
+    });
+
+    it('does nothing when the head sha is unchanged', async () => {
+      const logs: string[] = [];
+      const seed = {
+        issueComments: [
+          { ...previousSummary, body: '<!-- ollama-review-action:summary:model=glm-5.3:sha=sha123 -->\n## Ollama review\n' },
+        ],
+      };
+
+      await run(
+        deps(recorded, { info: (message) => logs.push(message) }, twoFiles, {}, seed),
+      );
+
+      assert.equal(recorded.prompts.length, 0);
+      assert.equal(recorded.compareCalls.length, 0);
+      assert.ok(logs.some((line) => /not changed/i.test(line)));
+    });
+
+    const carriedComment = (severity?: string): Record<string, unknown> => ({
+      id: 77,
+      body: severity
+        ? `**old finding**\n\n<!-- ollama-review-action:inline severity=${severity} -->`
+        : '<!-- ollama-review-action:inline -->unparseable legacy comment',
+      path: 'src/other.ts',
+      user: { login: 'bot' },
+    });
+    const noFindings = {
+      chat: async () => ({
+        content: JSON.stringify({ summary: 'Nothing found.', findings: [] }),
+      }),
+    };
+
+    it('fails the gate on a carried-over finding even with nothing new to report', async () => {
+      const seed = {
+        issueComments: [previousSummary],
+        reviewComments: [carriedComment('critical')],
+        compare: { behind_by: 0, files: [{ filename: 'src/app.ts' }] },
+      };
+
+      await run(
+        deps(
+          recorded,
+          { ...noFindings, loadConfig: () => config({ failOn: 'critical' }) },
+          twoFiles,
+          {},
+          seed,
+        ),
+      );
+
+      assert.equal(recorded.outputs.findings_count, 0);
+      assert.equal(recorded.outputs.failed, 'true');
+      assert.equal(recorded.failures.length, 1);
+      assert.match(recorded.failures[0] ?? '', /critical/);
+    });
+
+    it('does not fail the gate on a carried-over comment whose severity cannot be parsed', async () => {
+      const seed = {
+        issueComments: [previousSummary],
+        reviewComments: [carriedComment(undefined)],
+        compare: { behind_by: 0, files: [{ filename: 'src/app.ts' }] },
+      };
+
+      await run(
+        deps(
+          recorded,
+          { ...noFindings, loadConfig: () => config({ failOn: 'critical' }) },
+          twoFiles,
+          {},
+          seed,
+        ),
+      );
+
+      assert.equal(recorded.outputs.failed, 'false');
+      assert.equal(recorded.failures.length, 0);
+    });
+
+    it('fails the gate on the no-op path when a blocking finding still stands', async () => {
+      const seed = {
+        issueComments: [
+          { ...previousSummary, body: '<!-- ollama-review-action:summary:model=glm-5.3:sha=sha123 -->\n## Ollama review\n' },
+        ],
+        reviewComments: [carriedComment('blocker')],
+      };
+
+      await run(
+        deps(
+          recorded,
+          { loadConfig: () => config({ failOn: 'critical' }) },
+          twoFiles,
+          {},
+          seed,
+        ),
+      );
+
+      assert.equal(recorded.prompts.length, 0);
+      assert.equal(recorded.outputs.failed, 'true');
+      assert.match(recorded.failures[0] ?? '', /blocker/);
+    });
+
+    it('fails the gate when nothing was re-reviewed but a blocking finding still stands', async () => {
+      const seed = {
+        issueComments: [previousSummary],
+        reviewComments: [carriedComment('major')],
+        compare: { behind_by: 0, files: [] },
+      };
+
+      await run(
+        deps(
+          recorded,
+          { loadConfig: () => config({ failOn: 'major' }) },
+          twoFiles,
+          {},
+          seed,
+        ),
+      );
+
+      assert.equal(recorded.prompts.length, 0);
+      assert.equal(recorded.outputs.failed, 'true');
+    });
   });
 });
