@@ -103,7 +103,8 @@ The action needs `pull-requests: write` and your `OLLAMA_API_KEY`, so it is wort
 | `ollama_api_key` | `OLLAMA_API_KEY` env | Ollama API key. Prefer passing it as an environment variable from a secret. |
 | `ollama_host` | `https://ollama.com` | Base URL of the Ollama API. Must use `https://`. Plain `http://` is only accepted for loopback addresses (`localhost`, `127.0.0.0/8`, `[::1]`) for local development; anything else is rejected when the action starts. The Ollama API key is never sent to a different origin - see "The Ollama host and TLS" below. |
 | `github-token` | `${{ github.token }}` | Token used to read the PR and post the review. The workflow token is picked up automatically - you only need to override this to use a PAT. |
-| `prompt` | - | Extra review instructions appended to the default reviewer prompt. |
+| `profile` | `default` | Named review profile that focuses the system prompt: `default`, `security`, `performance` or `maintainability`. See "Review profiles" below. |
+| `prompt` | - | Extra review instructions appended on top of the profile-selected system prompt. |
 | `max_diff_chars` | `60000` | Maximum characters of diff per request. Larger diffs are split across several requests. |
 | `max_files` | `50` | Maximum number of changed files to review. |
 | `exclude_paths` | - | Comma-separated glob patterns to skip, e.g. `**/*.lock,dist/**,docs/**`. |
@@ -150,6 +151,33 @@ Anything else fails the action at startup with a clear error, before any network
 ```
 
 The review is always posted first; the job fails afterwards if the model reported a finding at or above the threshold. Combine it with a required status check to block merges.
+
+## Review profiles
+
+The `profile` input selects a named focus for the review instead of writing the same instructions by hand every time:
+
+| Profile | Focus |
+| --- | --- |
+| `default` | Balanced review across correctness, security, reliability, performance and maintainability. |
+| `security` | Vulnerabilities: injection, broken access control, secrets, unsafe defaults and crypto, plus correctness bugs with a security impact. |
+| `performance` | Algorithmic and I/O efficiency: quadratic behaviour, N+1 queries, blocking work on hot paths, unbounded growth, waste. |
+| `maintainability` | Structure: duplicated logic, misleading names and abstractions, dead code, missing error context, hidden coupling. |
+
+Every profile keeps the same honesty rules (no findings you cannot point at in the diff, no invented facts, no padding) and the same line-anchoring and output format. Only the "look for" section of the system prompt changes.
+
+`profile` and `prompt` compose: the profile picks the system prompt, and `prompt` is appended after it as extra instructions. For example, a security review that also cares about backwards compatibility:
+
+```yaml
+- uses: mlk/ollama-review-action@637b8047b5f317fe1576941dc98ee5475414c5f7 # v1
+  with:
+    model: glm-5.3
+    profile: security
+    prompt: |
+      Our public API must stay backwards compatible.
+      Pay special attention to the webhook handlers.
+```
+
+An unknown `profile` value fails the action at startup with the list of valid values.
 
 ## Customising the review
 

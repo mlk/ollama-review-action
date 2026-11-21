@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { buildUserPrompt, OUTPUT_SCHEMA, SYSTEM_PROMPT } from '../src/prompt';
+import {
+  buildUserPrompt,
+  OUTPUT_SCHEMA,
+  REVIEW_PROFILES,
+  SYSTEM_PROMPT,
+  systemPromptFor,
+} from '../src/prompt';
 import { PullRequestContext } from '../src/types';
 
 const context: PullRequestContext = {
@@ -21,6 +27,44 @@ describe('SYSTEM_PROMPT', () => {
 
   it('asks for JSON only', () => {
     assert.match(SYSTEM_PROMPT, /Respond with JSON only/);
+  });
+});
+
+describe('systemPromptFor', () => {
+  it('returns the default prompt byte-for-byte for the default profile', () => {
+    assert.equal(systemPromptFor('default'), SYSTEM_PROMPT);
+  });
+
+  it('covers every advertised profile', () => {
+    assert.deepEqual([...REVIEW_PROFILES], ['default', 'security', 'performance', 'maintainability']);
+  });
+
+  it('gives each profile a distinct focus section', () => {
+    const prompts = REVIEW_PROFILES.map((profile) => systemPromptFor(profile));
+    assert.equal(new Set(prompts).size, REVIEW_PROFILES.length);
+  });
+
+  it('keeps the honesty and anchoring rules in every profile', () => {
+    for (const profile of REVIEW_PROFILES) {
+      const prompt = systemPromptFor(profile);
+      assert.match(prompt, /Do not assert facts the diff does not show/);
+      assert.match(prompt, /Never speculate about code you cannot see/);
+      assert.match(prompt, /If the diff is fine, return no findings/);
+      assert.match(prompt, /file and a line number that appears in the annotated diff/);
+      assert.match(prompt, /Respond with JSON only/);
+    }
+  });
+
+  it('focuses each non-default profile on its concern', () => {
+    assert.match(systemPromptFor('security'), /security as the lens/);
+    assert.match(systemPromptFor('security'), /Injection/);
+    assert.match(systemPromptFor('security'), /access control/i);
+
+    assert.match(systemPromptFor('performance'), /performance as the lens/);
+    assert.match(systemPromptFor('performance'), /N\+1 queries/);
+
+    assert.match(systemPromptFor('maintainability'), /maintainability as the lens/);
+    assert.match(systemPromptFor('maintainability'), /Duplicated logic/);
   });
 });
 

@@ -32,8 +32,17 @@ inputs:
     description: 'Token used to read the pull request and post the review. Defaults to the workflow token.'
     required: false
     default: ${{ github.token }}
+  profile:
+    description: |
+      Named review profile that focuses the system prompt:
+      "default" (balanced review), "security" (vulnerabilities and unsafe patterns),
+      "performance" (algorithmic and I/O efficiency), "maintainability" (structure,
+      duplication, error handling). All profiles keep the same honesty and
+      line-anchoring rules. The "prompt" input is appended on top of the profile.
+    required: false
+    default: 'default'
   prompt:
-    description: 'Extra review instructions appended to the default reviewer prompt.'
+    description: 'Extra review instructions appended on top of the profile-selected system prompt.'
     required: false
     default: ''
   max_diff_chars:

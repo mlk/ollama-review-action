@@ -15,7 +15,7 @@ import {
 } from './github';
 import { ChatMessage, ChatResult, chatCompletion, OllamaClientOptions } from './ollama';
 import { parseReview } from './parse';
-import { buildUserPrompt, SYSTEM_PROMPT } from './prompt';
+import { buildUserPrompt, systemPromptFor } from './prompt';
 import { MARKER_INLINE, MARKER_SUMMARY, renderFindingBody, renderSummaryBody } from './render';
 import { selectFiles } from './select';
 import { Finding, meetsThreshold, SEVERITIES, TokenUsage } from './types';
@@ -148,6 +148,8 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
   }
 
 
+  const systemPrompt = systemPromptFor(config.profile);
+
   const chunks = chunkDiffs(reviewed, config.maxDiffChars);
   deps.info(`Reviewing ${reviewed.length} file(s) in ${chunks.length} request(s).`);
 
@@ -175,7 +177,7 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
         ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
       },
       [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
     );
