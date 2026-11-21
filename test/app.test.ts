@@ -651,5 +651,107 @@ describe('run', () => {
       assert.equal(recorded.compareCalls.length, 0);
       assert.ok(logs.some((line) => /not changed/i.test(line)));
     });
+
+    const carriedComment = (severity?: string): Record<string, unknown> => ({
+      id: 77,
+      body: severity
+        ? `**old finding**\n\n<!-- ollama-review-action:inline severity=${severity} -->`
+        : '<!-- ollama-review-action:inline -->unparseable legacy comment',
+      path: 'src/other.ts',
+      user: { login: 'bot' },
+    });
+    const noFindings = {
+      chat: async () => ({
+        content: JSON.stringify({ summary: 'Nothing found.', findings: [] }),
+      }),
+    };
+
+    it('fails the gate on a carried-over finding even with nothing new to report', async () => {
+      const seed = {
+        issueComments: [previousSummary],
+        reviewComments: [carriedComment('critical')],
+        compare: { behind_by: 0, files: [{ filename: 'src/app.ts' }] },
+      };
+
+      await run(
+        deps(
+          recorded,
+          { ...noFindings, loadConfig: () => config({ failOn: 'critical' }) },
+          twoFiles,
+          {},
+          seed,
+        ),
+      );
+
+      assert.equal(recorded.outputs.findings_count, 0);
+      assert.equal(recorded.outputs.failed, 'true');
+      assert.equal(recorded.failures.length, 1);
+      assert.match(recorded.failures[0] ?? '', /critical/);
+    });
+
+    it('does not fail the gate on a carried-over comment whose severity cannot be parsed', async () => {
+      const seed = {
+        issueComments: [previousSummary],
+        reviewComments: [carriedComment(undefined)],
+        compare: { behind_by: 0, files: [{ filename: 'src/app.ts' }] },
+      };
+
+      await run(
+        deps(
+          recorded,
+          { ...noFindings, loadConfig: () => config({ failOn: 'critical' }) },
+          twoFiles,
+          {},
+          seed,
+        ),
+      );
+
+      assert.equal(recorded.outputs.failed, 'false');
+      assert.equal(recorded.failures.length, 0);
+    });
+
+    it('fails the gate on the no-op path when a blocking finding still stands', async () => {
+      const seed = {
+        issueComments: [
+          { ...previousSummary, body: '<!-- ollama-review-action:summary:model=glm-5.3:sha=sha123 -->\n## Ollama review\n' },
+        ],
+        reviewComments: [carriedComment('blocker')],
+      };
+
+      await run(
+        deps(
+          recorded,
+          { loadConfig: () => config({ failOn: 'critical' }) },
+          twoFiles,
+          {},
+          seed,
+        ),
+      );
+
+      assert.equal(recorded.prompts.length, 0);
+      assert.equal(recorded.outputs.failed, 'true');
+      assert.match(recorded.failures[0] ?? '', /blocker/);
+    });
+
+    it('fails the gate when nothing was re-reviewed but a blocking finding still stands', async () => {
+      const seed = {
+        issueComments: [previousSummary],
+        reviewComments: [carriedComment('major')],
+        compare: { behind_by: 0, files: [] },
+      };
+
+      await run(
+        deps(
+          recorded,
+          { loadConfig: () => config({ failOn: 'major' }) },
+          twoFiles,
+          {},
+          seed,
+        ),
+      );
+
+      assert.equal(recorded.prompts.length, 0);
+      assert.equal(recorded.outputs.failed, 'true');
+    });
   });
 });

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { isValidSuggestion, MARKER_INLINE, MARKER_SUMMARY, parseSummarySha, renderFindingBody, renderSummaryBody, severityEmoji } from '../src/render';
+import { isValidSuggestion, MARKER_INLINE, MARKER_SUMMARY, parseInlineSeverity, parseSummarySha, renderFindingBody, renderSummaryBody, severityEmoji } from '../src/render';
 import { Finding } from '../src/types';
 
 function finding(overrides: Partial<Finding> = {}): Finding {
@@ -78,8 +78,14 @@ describe('renderFindingBody', () => {
     assert.match(body, /`major` - Something is wrong/);
   });
 
-  it('ends with the inline marker so stale comments can be found', () => {
-    assert.match(renderFindingBody(finding()), new RegExp(MARKER_INLINE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  it('ends with an inline marker carrying the severity', () => {
+    const body = renderFindingBody(finding());
+    assert.match(body, new RegExp(`${MARKER_INLINE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} severity=major -->`));
+  });
+
+  it('round-trips the severity through the marker', () => {
+    const body = renderFindingBody(finding({ severity: 'blocker' }));
+    assert.equal(parseInlineSeverity(body), 'blocker');
   });
 });
 
@@ -161,5 +167,20 @@ describe('parseSummarySha', () => {
 
   it('returns undefined when there is no marker at all', () => {
     assert.equal(parseSummarySha('just a comment'), undefined);
+  });
+});
+
+describe('parseInlineSeverity', () => {
+  it('reads the severity from a marker written by renderFindingBody', () => {
+    assert.equal(parseInlineSeverity(renderFindingBody(finding({ severity: 'critical' }))), 'critical');
+  });
+
+  it('falls back to the bolded header for comments posted before the marker carried severity', () => {
+    const legacy = '**🟠 `critical` - something broke**\n\nbody\n\n<!-- ollama-review-action:inline -->';
+    assert.equal(parseInlineSeverity(legacy), 'critical');
+  });
+
+  it('returns undefined when no severity can be found', () => {
+    assert.equal(parseInlineSeverity('<!-- ollama-review-action:inline -->just a note'), undefined);
   });
 });

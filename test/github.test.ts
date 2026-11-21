@@ -348,6 +348,20 @@ describe('compareCommitsSince', () => {
     const result = await compareCommitsSince(octokit, 'base-sha', 'head-sha');
 
     assert.equal(result.canIncrement, false);
+    assert.equal(result.reason, 'rewritten');
+  });
+
+  it('treats a full page of compare files as unreliable', async () => {
+    const files = Array.from({ length: 300 }, (_, index) => ({
+      filename: `file-${index}.ts`,
+      status: 'modified',
+    }));
+    const octokit = octokitWithCompare({ status: 'ahead', behind_by: 0, files });
+
+    const result = await compareCommitsSince(octokit, 'base-sha', 'head-sha');
+
+    assert.equal(result.canIncrement, false);
+    assert.equal(result.reason, 'truncated');
   });
 
   it('treats a missing behind_by as unsafe', async () => {
@@ -407,7 +421,7 @@ describe('replaceInlineComments', () => {
   it('posts the new comments with the commit id and side', async () => {
     const state = emptyState();
 
-    const count = await replaceInlineComments(
+    const result = await replaceInlineComments(
       createOctokit(state),
       1,
       [{ path: 'src/app.ts', line: 2, side: 'RIGHT', body: 'a finding' }],
@@ -415,7 +429,8 @@ describe('replaceInlineComments', () => {
       'sha123',
     );
 
-    assert.equal(count, 1);
+    assert.equal(result.posted, 1);
+    assert.deepEqual(result.carriedSeverities, []);
     assert.equal(state.created.length, 1);
     assert.equal(state.created[0]?.commit_id, 'sha123');
     assert.equal(state.created[0]?.path, 'src/app.ts');
@@ -505,6 +520,27 @@ describe('replaceInlineComments', () => {
 
     assert.deepEqual(state.deleted.map((call) => call.comment_id), [12]);
     assert.equal(state.created.length, 1);
+  });
+
+  it('reports the severities of the kept comments', async () => {
+    const state = emptyState();
+    state.reviewComments = [
+      { id: 11, body: '**old** <!-- ollama-review-action:inline severity=critical -->', path: 'src/keep.ts', user: { login: 'bot' } },
+      { id: 12, body: '**\u{1F534} `blocker` - old finding**\n\ntext\n\n<!-- ollama-review-action:inline severity=blocker -->', path: 'src/keep2.ts', user: { login: 'bot' } },
+      { id: 13, body: '<!-- ollama-review-action:inline -->no severity here', path: 'src/keep3.ts', user: { login: 'bot' } },
+      { id: 14, body: '<!-- ollama-review-action:inline severity=major -->', path: 'src/changed.ts', user: { login: 'bot' } },
+    ];
+
+    const result = await replaceInlineComments(
+      createOctokit(state),
+      1,
+      [{ path: 'src/changed.ts', line: 2, side: 'RIGHT', body: 'new' }],
+      '<!-- ollama-review-action:inline',
+      'sha123',
+      new Set(['src/changed.ts']),
+    );
+
+    assert.deepEqual(result.carriedSeverities, ['critical', 'blocker']);
   });
 });
 

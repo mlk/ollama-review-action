@@ -6,6 +6,7 @@ import { chunkDiffs, renderDiff, truncate } from './diff';
 import {
   anchorFindings,
   compareCommitsSince,
+  fetchCarriedInlineSeverities,
   fetchChangedFiles,
   fetchContextFiles,
   fetchPreviousReviewSha,
@@ -18,7 +19,7 @@ import { parseReview } from './parse';
 import { buildUserPrompt, systemPromptFor } from './prompt';
 import { MARKER_INLINE, MARKER_SUMMARY, renderFindingBody, renderSummaryBody } from './render';
 import { selectFiles } from './select';
-import { Finding, meetsThreshold, SEVERITIES, TokenUsage } from './types';
+import { Finding, meetsThreshold, SEVERITIES, Severity, TokenUsage } from './types';
 
 export type Octokit = ReturnType<typeof getOctokit>;
 
@@ -48,9 +49,29 @@ export const defaultDeps: Deps = {
   },
 };
 
+function worstSeverity(severities: Severity[]): Severity | undefined {
+  let worst: Severity | undefined;
+  for (const severity of severities) {
+    if (!worst || SEVERITIES.indexOf(severity) > SEVERITIES.indexOf(worst)) {
+      worst = severity;
+    }
+  }
+  return worst;
+}
+
 export async function run(deps: Deps = defaultDeps): Promise<void> {
   const config = deps.loadConfig();
   const octokit = deps.getOctokit(config.token);
+
+  const applyFailGate = (severities: Severity[]): void => {
+    const worst = worstSeverity(severities);
+    const failed =
+      worst !== undefined && config.failOn !== 'none' && meetsThreshold(worst, config.failOn);
+    deps.setOutput('failed', failed ? 'true' : 'false');
+    if (failed && worst) {
+      deps.setFailed(`The review found a ${worst} severity issue (fail_on=${config.failOn}).`);
+    }
+  };
 
   deps.info(`Reviewing pull request with model "${config.model}" via ${config.host}.`);
 
@@ -60,12 +81,14 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
   const files = await fetchChangedFiles(octokit, pullRequest.number);
   if (files.length === 0) {
     deps.info('No changed files to review.');
+    applyFailGate(await fetchCarriedInlineSeverities(octokit, pullRequest.number, MARKER_INLINE));
     return;
   }
 
   const selected = selectFiles(files, config.excludePaths, config.maxFiles);
   if (selected.length === 0) {
     deps.info('Nothing to review after filtering.');
+    applyFailGate(await fetchCarriedInlineSeverities(octokit, pullRequest.number, MARKER_INLINE));
     return;
   }
 
@@ -84,13 +107,18 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
       deps.info(
         `The head commit has not changed since the last review (${shortSha(previous)}); nothing to do.`,
       );
+      applyFailGate(
+        await fetchCarriedInlineSeverities(octokit, pullRequest.number, MARKER_INLINE),
+      );
       return;
     } else {
       try {
         const compare = await compareCommitsSince(octokit, previous, pullRequest.headSha);
         if (!compare.canIncrement) {
           deps.info(
-            `The branch history was rewritten since ${shortSha(previous)} (force-push or rebase); falling back to a full review.`,
+            compare.reason === 'truncated'
+              ? `The comparison lists ${compare.files.length} or more files and may be incomplete; falling back to a full review.`
+              : `The branch history was rewritten since ${shortSha(previous)} (force-push or rebase); falling back to a full review.`,
           );
         } else {
           const changedPaths = new Set<string>();
@@ -108,6 +136,9 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
           if (narrowed.length === 0) {
             deps.info(
               `No reviewed files changed since the last review (${shortSha(previous)}); leaving the existing review in place.`,
+            );
+            applyFailGate(
+              await fetchCarriedInlineSeverities(octokit, pullRequest.number, MARKER_INLINE),
             );
             return;
           }
@@ -242,29 +273,41 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
   });
 
   let summaryCommentId = '';
+  // Severities of the findings that are kept on the pull request from earlier
+  // runs (files not re-reviewed). The gate has to count those alongside this
+  // run's findings, or a carried-over blocker would stop failing the check.
+  let carriedSeverities: Severity[] = [];
   if (config.postReview) {
     summaryCommentId = String(
       await upsertSummaryComment(octokit, pullRequest.number, body, MARKER_SUMMARY),
     );
 
-    const carriedPaths = incrementalSince
+    // Paths whose previous inline comments are replaced with this run's findings:
+    // exactly the files that were re-reviewed (plus their old names on renames).
+    const reReviewedPaths = incrementalSince
       ? new Set(
           reviewed.flatMap((diff) =>
             diff.previousPath ? [diff.path, diff.previousPath] : [diff.path],
           ),
         )
       : undefined;
-    await replaceInlineComments(
+    const result = await replaceInlineComments(
       octokit,
       pullRequest.number,
       comments,
       MARKER_INLINE,
       pullRequest.headSha,
-      carriedPaths,
+      reReviewedPaths,
     );
+    carriedSeverities = result.carriedSeverities;
   } else {
     deps.info('post_review is false - not posting to GitHub.');
     deps.info(body);
+    carriedSeverities = await fetchCarriedInlineSeverities(
+      octokit,
+      pullRequest.number,
+      MARKER_INLINE,
+    );
   }
 
   try {
@@ -277,15 +320,5 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
   deps.setOutput('findings_count', anchored.length);
   deps.setOutput('comment_id', summaryCommentId);
 
-  const worst = anchored
-    .map((finding) => finding.severity)
-    .sort((a, b) => SEVERITIES.indexOf(b) - SEVERITIES.indexOf(a))[0];
-
-  const failed =
-    worst !== undefined && config.failOn !== 'none' && meetsThreshold(worst, config.failOn);
-  deps.setOutput('failed', failed ? 'true' : 'false');
-
-  if (failed) {
-    deps.setFailed(`The review found a ${worst} severity issue (fail_on=${config.failOn}).`);
-  }
+  applyFailGate([...anchored.map((finding) => finding.severity), ...carriedSeverities]);
 }

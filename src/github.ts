@@ -2,8 +2,8 @@ import { info, warning } from '@actions/core';
 import { context, getOctokit } from '@actions/github';
 
 import { buildFileDiff } from './diff';
-import { parseSummarySha } from './render';
-import { FileDiff, Finding, PullRequestContext, RepoContextFile } from './types';
+import { parseInlineSeverity, parseSummarySha } from './render';
+import { FileDiff, Finding, PullRequestContext, RepoContextFile, Severity } from './types';
 
 export interface ReviewComment {
   path: string;
@@ -214,11 +214,16 @@ export async function fetchPreviousReviewSha(
 }
 
 export interface CompareResult {
-  /** True when every commit in `baseSha` is contained in `headSha` (history was not rewritten). */
+  /** True when every commit in `baseSha` is contained in `headSha` (history was not rewritten) and the file list is complete. */
   canIncrement: boolean;
+  /** Why incrementing is not possible, when it is not. */
+  reason?: 'rewritten' | 'truncated';
   /** Files that changed between the two commits. Only path fields are populated. */
   files: Array<{ filename: string; previous_filename?: string }>;
 }
+
+/** The compare API returns at most this many files; at the cap the list may be incomplete. */
+export const COMPARE_FILE_LIMIT = 300;
 
 /**
  * Compares two commits on the same branch. Used to find what changed since the
@@ -246,7 +251,14 @@ export async function compareCommitsSince(
     previous_filename: file.previous_filename ?? undefined,
   }));
 
-  return { canIncrement: behindBy === 0, files };
+  if (behindBy !== 0) {
+    return { canIncrement: false, reason: 'rewritten', files };
+  }
+  if (files.length >= COMPARE_FILE_LIMIT) {
+    // The cap leaves no way to know whether files were dropped from the list.
+    return { canIncrement: false, reason: 'truncated', files };
+  }
+  return { canIncrement: true, files };
 }
 
 /**
@@ -295,7 +307,16 @@ export async function upsertSummaryComment(
  * When `onlyPaths` is given (incremental reviews), previous comments whose path
  * is not in the set are left alone: they belong to files that were not
  * re-reviewed, so their findings from the previous review are still current.
+ * The severities of those kept comments are returned so callers can keep the
+ * `fail_on` gate honest about findings that predate this run.
  */
+export interface ReplaceInlineCommentsResult {
+  /** Number of new inline comments posted. */
+  posted: number;
+  /** Severities of the kept comments whose path is outside `onlyPaths`; their findings still stand. */
+  carriedSeverities: Severity[];
+}
+
 export async function replaceInlineComments(
   octokit: ReturnType<typeof getOctokit>,
   pullNumber: number,
@@ -303,9 +324,10 @@ export async function replaceInlineComments(
   marker: string,
   headSha: string,
   onlyPaths?: ReadonlySet<string>,
-): Promise<number> {
+): Promise<ReplaceInlineCommentsResult> {
   const { owner, repo } = ownerRepo();
   const login = await authenticatedLogin(octokit);
+  let carriedSeverities: Severity[] = [];
 
   try {
     const previous = await octokit.paginate(octokit.rest.pulls.listReviewComments, {
@@ -323,7 +345,11 @@ export async function replaceInlineComments(
     const stale = onlyPaths
       ? mine.filter((comment) => (comment.path ? onlyPaths.has(comment.path) : true))
       : mine;
-    const kept = mine.length - stale.length;
+    const staleIds = new Set(stale.map((comment) => comment.id));
+    const kept = mine.filter((comment) => !staleIds.has(comment.id));
+    carriedSeverities = kept
+      .map((comment) => parseInlineSeverity(comment.body ?? ''))
+      .filter((severity): severity is Severity => severity !== undefined);
 
     for (const comment of stale) {
       try {
@@ -342,8 +368,8 @@ export async function replaceInlineComments(
     if (stale.length > 0) {
       info(`Removed ${stale.length} inline comment(s) from the previous run.`);
     }
-    if (kept > 0) {
-      info(`Kept ${kept} inline comment(s) on files not re-reviewed in this run.`);
+    if (kept.length > 0) {
+      info(`Kept ${kept.length} inline comment(s) on files not re-reviewed in this run.`);
     }
   } catch (error) {
     warning(`Could not list previous inline comments: ${(error as Error).message}`);
@@ -370,7 +396,42 @@ export async function replaceInlineComments(
   }
 
   info(`Posted ${comments.length} inline comment(s).`);
-  return comments.length;
+  return { posted: comments.length, carriedSeverities };
+}
+
+/**
+ * Severities of the inline comments this action left on the pull request that
+ * are still standing - used when a run posts nothing new but the `fail_on`
+ * gate still has to account for findings from earlier runs.
+ */
+export async function fetchCarriedInlineSeverities(
+  octokit: ReturnType<typeof getOctokit>,
+  pullNumber: number,
+  marker: string,
+): Promise<Severity[]> {
+  const { owner, repo } = ownerRepo();
+  const login = await authenticatedLogin(octokit);
+
+  try {
+    const comments = await octokit.paginate(octokit.rest.pulls.listReviewComments, {
+      owner,
+      repo,
+      pull_number: pullNumber,
+      per_page: 100,
+    });
+
+    return comments
+      .filter(
+        (comment) =>
+          comment.body?.includes(marker) &&
+          (login === undefined || comment.user?.login === login),
+      )
+      .map((comment) => parseInlineSeverity(comment.body ?? ''))
+      .filter((severity): severity is Severity => severity !== undefined);
+  } catch (error) {
+    warning(`Could not list previous inline comments: ${(error as Error).message}`);
+    return [];
+  }
 }
 /**
  * Maps model findings onto files and lines that GitHub actually accepts a

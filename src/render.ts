@@ -1,7 +1,9 @@
 import { Finding, Severity, TokenUsage } from './types';
 
 export const MARKER_SUMMARY = '<!-- ollama-review-action:summary';
-export const MARKER_INLINE = '<!-- ollama-review-action:inline -->';
+// Prefix shared by every marker this action writes into an inline review comment.
+// Comments may carry attributes, e.g. `<!-- ollama-review-action:inline severity=major -->`.
+export const MARKER_INLINE = '<!-- ollama-review-action:inline';
 
 export function severityEmoji(severity: Severity): string {
   switch (severity) {
@@ -57,9 +59,28 @@ export function renderFindingBody(finding: Finding): string {
     parts.push('');
   }
 
-  parts.push(MARKER_INLINE);
+  parts.push(`${MARKER_INLINE} severity=${finding.severity} -->`);
 
   return parts.join('\n').trimEnd();
+}
+
+const INLINE_SEVERITY_RE = /<!--\s*ollama-review-action:inline[^>]*?\bseverity=(blocker|critical|major|minor|nit)\b/;
+// Fallback for comments posted before the marker carried the severity: the
+// bolded header line is rendered as `**<emoji> \`severity\` - title**`.
+const HEADER_SEVERITY_RE = /\*\*[^`\n]*`(blocker|critical|major|minor|nit)`/;
+
+/**
+ * Reads the severity out of an inline comment posted by this action. Returns
+ * undefined when it cannot be determined - callers should treat unknown as
+ * non-blocking rather than failing the gate on a comment they cannot parse.
+ */
+export function parseInlineSeverity(body: string): Severity | undefined {
+  const marker = INLINE_SEVERITY_RE.exec(body);
+  if (marker?.[1]) {
+    return marker[1] as Severity;
+  }
+  const header = HEADER_SEVERITY_RE.exec(body);
+  return header?.[1] as Severity | undefined;
 }
 
 /** Parses the marker written by {@link renderSummaryBody}, returning the head SHA that was reviewed, if any. */
