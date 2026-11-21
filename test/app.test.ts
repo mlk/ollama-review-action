@@ -17,6 +17,7 @@ interface Recorded {
   updated: Array<Record<string, unknown>>;
   deleted: Array<Record<string, unknown>>;
   prompts: string[];
+  systemPrompts: string[];
   refs: Array<string | undefined>;
 }
 
@@ -32,6 +33,7 @@ function emptyRecorded(): Recorded {
     updated: [],
     deleted: [],
     prompts: [],
+    systemPrompts: [],
     refs: [],
   };
 }
@@ -50,6 +52,7 @@ function config(overrides: Partial<Config> = {}): Config {
     contextMaxChars: 12000,
     reasoningEffort: '',
     temperature: 0.2,
+    profile: 'default',
     failOn: 'none',
     postReview: true,
     ...overrides,
@@ -128,6 +131,7 @@ function deps(
     getOctokit: () => makeOctokit(state, files, contextFiles),
     chat: async (_options, messages) => {
       state.prompts.push(messages[1]?.content ?? '');
+      state.systemPrompts.push(messages[0]?.content ?? '');
       return {
         content: JSON.stringify({
           summary: 'Looks fine.',
@@ -424,6 +428,33 @@ describe('run', () => {
     );
 
     assert.match(recorded.prompts[0] ?? '', /Focus on migrations\./);
+  });
+
+  it('uses the default profile system prompt by default', async () => {
+    await run(deps(recorded, {}, oneFile));
+
+    assert.match(recorded.systemPrompts[0] ?? '', /Look for:\n1\. Correctness bugs/);
+  });
+
+  it('uses the security profile and still appends the extra prompt', async () => {
+    await run(
+      deps(
+        recorded,
+        {
+          loadConfig: () =>
+            config({ profile: 'security', extraPrompt: 'Focus on the webhook handlers.' }),
+        },
+        oneFile,
+      ),
+    );
+
+    const system = recorded.systemPrompts[0] ?? '';
+    assert.match(system, /security as the lens/);
+    assert.match(system, /Do not assert facts the diff does not show/);
+    assert.doesNotMatch(system, /5\. Maintainability - duplicated logic/);
+    // The extra prompt is appended to the profile's user message, not folded
+    // into the system prompt.
+    assert.match(recorded.prompts[0] ?? '', /Focus on the webhook handlers\./);
   });
 
   it('warns but does not fail when the job summary cannot be written', async () => {

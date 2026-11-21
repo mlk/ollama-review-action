@@ -15,6 +15,7 @@ const ENV_KEYS = [
   'INPUT_CONTEXT_FILES',
   'INPUT_CONTEXT_MAX_CHARS',
   'INPUT_REASONING_EFFORT',
+  'INPUT_PROFILE',
   'INPUT_TEMPERATURE',
   'INPUT_FAIL_ON',
   'INPUT_POST_REVIEW',
@@ -115,6 +116,7 @@ describe('loadConfig', () => {
     assert.equal(config.contextMaxChars, 12000);
     assert.equal(config.extraPrompt, '');
     assert.equal(config.reasoningEffort, '');
+    assert.equal(config.profile, 'default');
   });
 
   it('parses numeric inputs', () => {
@@ -197,6 +199,34 @@ describe('loadConfig', () => {
     baseEnv();
     process.env.INPUT_CONTEXT_MAX_CHARS = 'lots';
     assert.throws(() => loadConfig(), /context_max_chars/);
+  });
+
+  it('defaults the profile to default', () => {
+    baseEnv();
+    assert.equal(loadConfig().profile, 'default');
+  });
+
+  it('accepts each review profile', () => {
+    baseEnv();
+    for (const profile of ['default', 'security', 'performance', 'maintainability']) {
+      process.env.INPUT_PROFILE = profile;
+      assert.equal(loadConfig().profile, profile);
+    }
+  });
+
+  it('accepts a profile case-insensitively', () => {
+    baseEnv();
+    process.env.INPUT_PROFILE = 'Security';
+    assert.equal(loadConfig().profile, 'security');
+  });
+
+  it('rejects an unknown profile and lists the valid values', () => {
+    baseEnv();
+    process.env.INPUT_PROFILE = 'lighthouse';
+    assert.throws(
+      () => loadConfig(),
+      /Input "profile" must be one of default, security, performance, maintainability, got "lighthouse"/,
+    );
   });
 
   it('disables context files when set to none', () => {

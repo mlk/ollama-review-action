@@ -1,5 +1,6 @@
 import { getInput } from '@actions/core';
 
+import { isReviewProfile, ReviewProfile, REVIEW_PROFILES } from './prompt';
 import { isSeverity, Severity } from './types';
 
 /** Default per-file cap for context files, in characters. Kept in sync with the
@@ -19,6 +20,7 @@ export interface Config {
   contextMaxChars: number;
   reasoningEffort: string;
   temperature: number;
+  profile: ReviewProfile;
   failOn: Severity | 'none';
   postReview: boolean;
 }
@@ -139,6 +141,11 @@ export function loadConfig(): Config {
     );
   }
 
+  const profileRaw = getInput('profile').trim().toLowerCase() || 'default';
+  if (!isReviewProfile(profileRaw)) {
+    throw new Error(`Input "profile" must be one of ${REVIEW_PROFILES.join(', ')}, got "${profileRaw}".`);
+  }
+
   const failOnRaw = getInput('fail_on').trim().toLowerCase() || 'none';
   if (failOnRaw !== 'none' && !isSeverity(failOnRaw)) {
     throw new Error(`Input "fail_on" must be one of none, nit, minor, major, critical, blocker.`);
@@ -168,6 +175,7 @@ export function loadConfig(): Config {
     contextMaxChars: getIntInput('context_max_chars', DEFAULT_CONTEXT_MAX_CHARS),
     reasoningEffort: getInput('reasoning_effort').trim(),
     temperature,
+    profile: profileRaw,
     failOn: failOnRaw as Severity | 'none',
     postReview: getBoolInput('post_review', true),
   };
