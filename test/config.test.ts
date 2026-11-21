@@ -18,6 +18,7 @@ const ENV_KEYS = [
   'INPUT_TEMPERATURE',
   'INPUT_FAIL_ON',
   'INPUT_POST_REVIEW',
+  'INPUT_INCREMENTAL',
   'OLLAMA_API_KEY',
   'GITHUB_TOKEN',
 ];
@@ -161,6 +162,17 @@ describe('loadConfig', () => {
     baseEnv();
     process.env.INPUT_POST_REVIEW = 'maybe';
     assert.throws(() => loadConfig(), /must be a boolean/);
+  });
+
+  it('defaults incremental re-review to true', () => {
+    baseEnv();
+    assert.equal(loadConfig().incremental, true);
+  });
+
+  it('can disable incremental re-review', () => {
+    baseEnv();
+    process.env.INPUT_INCREMENTAL = 'false';
+    assert.equal(loadConfig().incremental, false);
   });
 
   it('accepts a fail_on severity', () => {

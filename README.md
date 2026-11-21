@@ -113,6 +113,7 @@ The action needs `pull-requests: write` and your `OLLAMA_API_KEY`, so it is wort
 | `temperature` | `0.2` | Sampling temperature. |
 | `fail_on` | `none` | Fail the job when a finding of this severity or worse appears: `none`, `nit`, `minor`, `major`, `critical`, `blocker`. |
 | `post_review` | `true` | Set to `false` to print the review to the job log without posting it. |
+| `incremental` | `true` | On pushes to an already-reviewed pull request, only re-review the files that changed since the last review. Set to `false` to always review the full diff. |
 
 ## The Ollama host and TLS
 
@@ -174,7 +175,18 @@ You can also add one-off instructions with the `prompt` input:
 4. The model returns JSON (`summary` + `findings`). The action parses it, tolerating markdown fences and reasoning blocks.
 5. Each finding is anchored to a line GitHub accepts a comment on. Findings that land on a line outside the diff are either snapped to the nearest valid line or listed in the summary under "Other observations".
 6. The summary is posted as a sticky pull request comment and each finding is posted as an inline review comment on the changed line.
-7. When the pull request is pushed to again, the previous summary comment is edited in place and the previous inline comments are removed before the new ones are posted, so a busy pull request does not fill up with stale reviews.
+7. When the pull request is pushed to again, the action compares the head commit against the SHA recorded in the summary comment and re-reviews only the files that changed since then; the rest of the pull request is left alone. The previous summary comment is edited in place and the inline comments for the re-reviewed files are replaced, so a busy pull request does not fill up with stale reviews.
+
+## Incremental re-reviews
+
+On a `synchronize` event the action does not blindly re-review the whole pull request. It records the head commit SHA it reviewed in the sticky summary comment, and on the next run compares it against the new head:
+
+- Files that changed since that commit are re-reviewed; the rest keep the findings from the previous review.
+- Inline comments on files that were not re-reviewed are left in place; only comments on re-reviewed files are removed and reposted.
+- If the branch history was rewritten (a force-push or rebase), or the comparison fails for any reason, the action logs why and falls back to a full review instead of erroring.
+- The first review on a pull request (or when the previous summary comment is gone) is always a full review.
+- Pushing with no new commits is a no-op: the recorded SHA matches and the action exits without calling the model.
+- Set `incremental: false` to always review the full diff.
 
 ## Troubleshooting
 

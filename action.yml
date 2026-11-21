@@ -78,6 +78,13 @@ inputs:
     description: 'Post the review to the pull request. Set to "false" to only print the review to the job log.'
     required: false
     default: 'true'
+  incremental:
+    description: |
+      On pushes to a pull request that was already reviewed, only re-review the
+      files whose diff changed since the last review, and keep the inline comments
+      on the other files. Set to "false" to always review the full diff.
+    required: false
+    default: 'true'
 
 outputs:
   summary:

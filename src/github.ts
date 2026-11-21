@@ -2,6 +2,7 @@ import { info, warning } from '@actions/core';
 import { context, getOctokit } from '@actions/github';
 
 import { buildFileDiff } from './diff';
+import { parseSummarySha } from './render';
 import { FileDiff, Finding, PullRequestContext, RepoContextFile } from './types';
 
 export interface ReviewComment {
@@ -171,6 +172,83 @@ async function authenticatedLogin(
   }
 }
 
+/** Finds the bot's own sticky comment carrying `marker`, if there is one. */
+async function findStickyComment(
+  octokit: ReturnType<typeof getOctokit>,
+  pullNumber: number,
+  marker: string,
+) {
+  const { owner, repo } = ownerRepo();
+  const login = await authenticatedLogin(octokit);
+
+  const existing = await octokit.paginate(octokit.rest.issues.listComments, {
+    owner,
+    repo,
+    issue_number: pullNumber,
+    per_page: 100,
+  });
+
+  return existing
+    .filter(
+      (comment) =>
+        comment.body?.includes(marker) && (login === undefined || comment.user?.login === login),
+    )
+    .pop();
+}
+
+/**
+ * Returns the head commit SHA recorded in the sticky summary comment from the
+ * previous run, or undefined when there is nothing to compare against (first
+ * run, or the marker predates SHA recording).
+ */
+export async function fetchPreviousReviewSha(
+  octokit: ReturnType<typeof getOctokit>,
+  pullNumber: number,
+  marker: string,
+): Promise<string | undefined> {
+  const previous = await findStickyComment(octokit, pullNumber, marker);
+  if (!previous?.body) {
+    return undefined;
+  }
+  return parseSummarySha(previous.body);
+}
+
+export interface CompareResult {
+  /** True when every commit in `baseSha` is contained in `headSha` (history was not rewritten). */
+  canIncrement: boolean;
+  /** Files that changed between the two commits. Only path fields are populated. */
+  files: Array<{ filename: string; previous_filename?: string }>;
+}
+
+/**
+ * Compares two commits on the same branch. Used to find what changed since the
+ * last review. A `basehead` of `base...head` compares the merge base against
+ * `head`, so `behind_by > 0` means the PR branch no longer contains `baseSha`
+ * - i.e. it was force-pushed or rebased, and the old review no longer maps
+ * onto the current history.
+ */
+export async function compareCommitsSince(
+  octokit: ReturnType<typeof getOctokit>,
+  baseSha: string,
+  headSha: string,
+): Promise<CompareResult> {
+  const { owner, repo } = ownerRepo();
+
+  const { data } = await octokit.rest.repos.compareCommitsWithBasehead({
+    owner,
+    repo,
+    basehead: `${baseSha}...${headSha}`,
+  });
+
+  const behindBy = typeof data.behind_by === 'number' ? data.behind_by : 1;
+  const files = (data.files ?? []).map((file) => ({
+    filename: file.filename,
+    previous_filename: file.previous_filename ?? undefined,
+  }));
+
+  return { canIncrement: behindBy === 0, files };
+}
+
 /**
  * Posts the review summary as a sticky pull request comment.
  *
@@ -185,21 +263,8 @@ export async function upsertSummaryComment(
   marker: string,
 ): Promise<number> {
   const { owner, repo } = ownerRepo();
-  const login = await authenticatedLogin(octokit);
 
-  const existing = await octokit.paginate(octokit.rest.issues.listComments, {
-    owner,
-    repo,
-    issue_number: pullNumber,
-    per_page: 100,
-  });
-
-  const previous = existing
-    .filter(
-      (comment) =>
-        comment.body?.includes(marker) && (login === undefined || comment.user?.login === login),
-    )
-    .pop();
+  const previous = await findStickyComment(octokit, pullNumber, marker);
 
   if (previous) {
     const { data } = await octokit.rest.issues.updateComment({
@@ -226,6 +291,10 @@ export async function upsertSummaryComment(
 /**
  * Removes the inline comments this action left on a previous run and posts the
  * current findings.
+ *
+ * When `onlyPaths` is given (incremental reviews), previous comments whose path
+ * is not in the set are left alone: they belong to files that were not
+ * re-reviewed, so their findings from the previous review are still current.
  */
 export async function replaceInlineComments(
   octokit: ReturnType<typeof getOctokit>,
@@ -233,6 +302,7 @@ export async function replaceInlineComments(
   comments: ReviewComment[],
   marker: string,
   headSha: string,
+  onlyPaths?: ReadonlySet<string>,
 ): Promise<number> {
   const { owner, repo } = ownerRepo();
   const login = await authenticatedLogin(octokit);
@@ -245,10 +315,15 @@ export async function replaceInlineComments(
       per_page: 100,
     });
 
-    const stale = previous.filter(
+    const mine = previous.filter(
       (comment) =>
         comment.body?.includes(marker) && (login === undefined || comment.user?.login === login),
     );
+
+    const stale = onlyPaths
+      ? mine.filter((comment) => (comment.path ? onlyPaths.has(comment.path) : true))
+      : mine;
+    const kept = mine.length - stale.length;
 
     for (const comment of stale) {
       try {
@@ -266,6 +341,9 @@ export async function replaceInlineComments(
 
     if (stale.length > 0) {
       info(`Removed ${stale.length} inline comment(s) from the previous run.`);
+    }
+    if (kept > 0) {
+      info(`Kept ${kept} inline comment(s) on files not re-reviewed in this run.`);
     }
   } catch (error) {
     warning(`Could not list previous inline comments: ${(error as Error).message}`);

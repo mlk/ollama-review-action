@@ -62,21 +62,48 @@ export function renderFindingBody(finding: Finding): string {
   return parts.join('\n').trimEnd();
 }
 
+/** Parses the marker written by {@link renderSummaryBody}, returning the head SHA that was reviewed, if any. */
+export function parseSummarySha(body: string): string | undefined {
+  const marker = new RegExp(`${MARKER_SUMMARY}[^>]*-->`).exec(body);
+  if (!marker) {
+    return undefined;
+  }
+  const sha = /:sha=([^\s>]{6,64})/i.exec(marker[0]);
+  return sha?.[1];
+}
+
+export interface SummaryBodyOptions {
+  /** Head commit this review covers. Recorded in the marker so the next run knows where to start from. */
+  headSha?: string;
+  /** Set when only some files were re-reviewed; adds a note explaining the scope. */
+  incremental?: { since: string; files: number };
+}
+
 export function renderSummaryBody(
   model: string,
   summary: string,
   findings: Finding[],
   unanchored: Finding[],
   usage?: TokenUsage,
+  options: SummaryBodyOptions = {},
 ): string {
   const lines: string[] = [];
 
-  lines.push(`${MARKER_SUMMARY}:model=${model} -->`);
+  const marker = options.headSha ? `:model=${model}:sha=${options.headSha}` : `:model=${model}`;
+  lines.push(`${MARKER_SUMMARY}${marker} -->`);
   lines.push('');
   lines.push('## Ollama review');
   lines.push('');
   lines.push(summary);
   lines.push('');
+
+  if (options.incremental) {
+    const { since, files } = options.incremental;
+    lines.push(
+      `_Incremental review: only the ${files} file${files === 1 ? '' : 's'} that changed since \`${since.slice(0, 7)}\` were re-reviewed; findings on unchanged files are from the previous review._`,
+    );
+    lines.push('');
+  }
 
   if (unanchored.length > 0) {
     lines.push('### Other observations');

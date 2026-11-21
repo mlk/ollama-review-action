@@ -5,8 +5,10 @@ import { Config, loadConfig } from './config';
 import { chunkDiffs, renderDiff, truncate } from './diff';
 import {
   anchorFindings,
+  compareCommitsSince,
   fetchChangedFiles,
   fetchContextFiles,
+  fetchPreviousReviewSha,
   getPullRequestContext,
   replaceInlineComments,
   upsertSummaryComment,
@@ -67,6 +69,62 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
     return;
   }
 
+  // Narrow to the files that changed since the last review, so a synchronize
+  // event does not re-review (and re-bill) the whole pull request. Findings
+  // for the skipped files are already posted on the pull request, so nothing
+  // is lost by not re-sending them to the model.
+  const shortSha = (sha: string): string => sha.slice(0, 7);
+  let reviewed = selected;
+  let incrementalSince: string | undefined;
+  if (config.incremental) {
+    const previous = await fetchPreviousReviewSha(octokit, pullRequest.number, MARKER_SUMMARY);
+    if (!previous) {
+      deps.info('No previous review found for this pull request - doing a full review.');
+    } else if (previous === pullRequest.headSha) {
+      deps.info(
+        `The head commit has not changed since the last review (${shortSha(previous)}); nothing to do.`,
+      );
+      return;
+    } else {
+      try {
+        const compare = await compareCommitsSince(octokit, previous, pullRequest.headSha);
+        if (!compare.canIncrement) {
+          deps.info(
+            `The branch history was rewritten since ${shortSha(previous)} (force-push or rebase); falling back to a full review.`,
+          );
+        } else {
+          const changedPaths = new Set<string>();
+          for (const file of compare.files) {
+            changedPaths.add(file.filename);
+            if (file.previous_filename) {
+              changedPaths.add(file.previous_filename);
+            }
+          }
+          const narrowed = selected.filter(
+            (diff) =>
+              changedPaths.has(diff.path) ||
+              (diff.previousPath !== undefined && changedPaths.has(diff.previousPath)),
+          );
+          if (narrowed.length === 0) {
+            deps.info(
+              `No reviewed files changed since the last review (${shortSha(previous)}); leaving the existing review in place.`,
+            );
+            return;
+          }
+          incrementalSince = previous;
+          deps.info(
+            `Incremental review: re-reviewing ${narrowed.length} of ${selected.length} file(s) that changed since ${shortSha(previous)}.`,
+          );
+          reviewed = narrowed;
+        }
+      } catch (error) {
+        deps.info(
+          `Could not compare with the previous review at ${shortSha(previous)} (${(error as Error).message}); falling back to a full review.`,
+        );
+      }
+    }
+  }
+
   let contextFiles: Awaited<ReturnType<typeof fetchContextFiles>> = [];
   if (config.contextFiles.length > 0) {
     try {
@@ -90,8 +148,8 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
   }
 
 
-  const chunks = chunkDiffs(selected, config.maxDiffChars);
-  deps.info(`Reviewing ${selected.length} file(s) in ${chunks.length} request(s).`);
+  const chunks = chunkDiffs(reviewed, config.maxDiffChars);
+  deps.info(`Reviewing ${reviewed.length} file(s) in ${chunks.length} request(s).`);
 
   const summaries: string[] = [];
   const findings: Finding[] = [];
@@ -143,7 +201,7 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
 
   const summary =
     summaries.join('\n\n') || 'The model did not return a summary for this pull request.';
-  const { anchored, unanchored } = anchorFindings(findings, selected);
+  const { anchored, unanchored } = anchorFindings(findings, reviewed);
 
   deps.info(`${anchored.length} anchored finding(s), ${unanchored.length} unanchored.`);
 
@@ -153,6 +211,12 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
     anchored,
     unanchored,
     sawUsage ? totalUsage : undefined,
+    {
+      headSha: pullRequest.headSha || undefined,
+      ...(incrementalSince
+        ? { incremental: { since: incrementalSince, files: reviewed.length } }
+        : {}),
+    },
   );
   const comments = anchored.map((finding) => {
     const comment: {
@@ -181,12 +245,20 @@ export async function run(deps: Deps = defaultDeps): Promise<void> {
       await upsertSummaryComment(octokit, pullRequest.number, body, MARKER_SUMMARY),
     );
 
+    const carriedPaths = incrementalSince
+      ? new Set(
+          reviewed.flatMap((diff) =>
+            diff.previousPath ? [diff.path, diff.previousPath] : [diff.path],
+          ),
+        )
+      : undefined;
     await replaceInlineComments(
       octokit,
       pullRequest.number,
       comments,
       MARKER_INLINE,
       pullRequest.headSha,
+      carriedPaths,
     );
   } else {
     deps.info('post_review is false - not posting to GitHub.');

@@ -3,7 +3,7 @@ import { beforeEach, describe, it } from 'node:test';
 
 import * as github from '@actions/github';
 
-import { anchorFindings, fetchChangedFiles, fetchContextFiles, getPullRequestContext, replaceInlineComments, upsertSummaryComment } from '../src/github';
+import { anchorFindings, compareCommitsSince, fetchChangedFiles, fetchContextFiles, fetchPreviousReviewSha, getPullRequestContext, replaceInlineComments, upsertSummaryComment } from '../src/github';
 import { buildFileDiff } from '../src/diff';
 import { Finding } from '../src/types';
 
@@ -263,6 +263,102 @@ describe('fetchChangedFiles', () => {
   });
 });
 
+describe('fetchPreviousReviewSha', () => {
+  const sha = '0123456789abcdef0123456789abcdef01234567';
+
+  it('returns the sha recorded in the summary comment marker', async () => {
+    const state = emptyState();
+    state.issueComments = [
+      { id: 55, body: `<!-- ollama-review-action:summary:model=glm-5.3:sha=${sha} -->\nbody`, user: { login: 'bot' } },
+    ];
+
+    const result = await fetchPreviousReviewSha(createOctokit(state), 1, '<!-- ollama-review-action:summary');
+
+    assert.equal(result, sha);
+  });
+
+  it('returns undefined when there is no summary comment', async () => {
+    const state = emptyState();
+
+    const result = await fetchPreviousReviewSha(createOctokit(state), 1, '<!-- ollama-review-action:summary');
+
+    assert.equal(result, undefined);
+  });
+
+  it('returns undefined when the marker has no sha (written before sha recording)', async () => {
+    const state = emptyState();
+    state.issueComments = [
+      { id: 55, body: '<!-- ollama-review-action:summary:model=glm-5.3 -->\nbody', user: { login: 'bot' } },
+    ];
+
+    const result = await fetchPreviousReviewSha(createOctokit(state), 1, '<!-- ollama-review-action:summary');
+
+    assert.equal(result, undefined);
+  });
+
+  it('ignores a summary comment written by somebody else', async () => {
+    const state = emptyState();
+    state.issueComments = [
+      { id: 55, body: `<!-- ollama-review-action:summary:model=glm-5.3:sha=${sha} -->`, user: { login: 'someone-else' } },
+    ];
+
+    const result = await fetchPreviousReviewSha(createOctokit(state), 1, '<!-- ollama-review-action:summary');
+
+    assert.equal(result, undefined);
+  });
+});
+
+describe('compareCommitsSince', () => {
+  function octokitWithCompare(response: unknown): ReturnType<typeof github.getOctokit> {
+    return {
+      rest: {
+        repos: {
+          compareCommitsWithBasehead: async () => ({ data: response }),
+        },
+      },
+    } as unknown as ReturnType<typeof github.getOctokit>;
+  }
+
+  it('reports incremental as safe when the head contains the base commit', async () => {
+    const octokit = octokitWithCompare({
+      status: 'ahead',
+      behind_by: 0,
+      files: [
+        { filename: 'src/app.ts', status: 'modified' },
+        { filename: 'src/new.ts', previous_filename: 'src/old.ts', status: 'renamed' },
+      ],
+    });
+
+    const result = await compareCommitsSince(octokit, 'base-sha', 'head-sha');
+
+    assert.equal(result.canIncrement, true);
+    assert.deepEqual(result.files, [
+      { filename: 'src/app.ts', previous_filename: undefined },
+      { filename: 'src/new.ts', previous_filename: 'src/old.ts' },
+    ]);
+  });
+
+  it('reports incremental as unsafe when the history was rewritten', async () => {
+    const octokit = octokitWithCompare({
+      status: 'diverged',
+      behind_by: 2,
+      files: [{ filename: 'src/app.ts', status: 'modified' }],
+    });
+
+    const result = await compareCommitsSince(octokit, 'base-sha', 'head-sha');
+
+    assert.equal(result.canIncrement, false);
+  });
+
+  it('treats a missing behind_by as unsafe', async () => {
+    const octokit = octokitWithCompare({ status: 'ahead', files: [] });
+
+    const result = await compareCommitsSince(octokit, 'base-sha', 'head-sha');
+
+    assert.equal(result.canIncrement, false);
+  });
+});
+
 describe('upsertSummaryComment', () => {
   it('creates the comment when there is none', async () => {
     const state = emptyState();
@@ -389,6 +485,26 @@ describe('replaceInlineComments', () => {
     );
 
     assert.equal(state.deleted.length, 0);
+  });
+
+  it('only replaces comments on the given paths, keeping the rest', async () => {
+    const state = emptyState();
+    state.reviewComments = [
+      { id: 11, body: '<!-- inline -->stale finding', path: 'src/keep.ts', user: { login: 'bot' } },
+      { id: 12, body: '<!-- inline -->stale finding', path: 'src/changed.ts', user: { login: 'bot' } },
+    ];
+
+    await replaceInlineComments(
+      createOctokit(state),
+      1,
+      [{ path: 'src/changed.ts', line: 2, side: 'RIGHT', body: 'new' }],
+      '<!-- inline -->',
+      'sha123',
+      new Set(['src/changed.ts']),
+    );
+
+    assert.deepEqual(state.deleted.map((call) => call.comment_id), [12]);
+    assert.equal(state.created.length, 1);
   });
 });
 

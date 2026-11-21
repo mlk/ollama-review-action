@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { isValidSuggestion, MARKER_INLINE, MARKER_SUMMARY, renderFindingBody, renderSummaryBody, severityEmoji } from '../src/render';
+import { isValidSuggestion, MARKER_INLINE, MARKER_SUMMARY, parseSummarySha, renderFindingBody, renderSummaryBody, severityEmoji } from '../src/render';
 import { Finding } from '../src/types';
 
 function finding(overrides: Partial<Finding> = {}): Finding {
@@ -125,5 +125,41 @@ describe('renderSummaryBody', () => {
   it('omits the other observations section when nothing is unanchored', () => {
     const body = renderSummaryBody('glm-5.3', 's', [finding()], []);
     assert.doesNotMatch(body, /Other observations/);
+  });
+
+  it('records the head SHA in the marker when given one', () => {
+    const body = renderSummaryBody('glm-5.3', 's', [], [], undefined, { headSha: 'abc1234def' });
+
+    assert.ok(body.includes(`${MARKER_SUMMARY}:model=glm-5.3:sha=abc1234def -->`));
+  });
+
+  it('adds an incremental note when only some files were reviewed', () => {
+    const body = renderSummaryBody('glm-5.3', 's', [], [], undefined, {
+      headSha: 'abc1234def',
+      incremental: { since: 'fed4321cafe', files: 2 },
+    });
+
+    assert.match(body, /Incremental review/);
+    assert.match(body, /changed since `fed4321`/);
+    assert.match(body, /2 files/);
+  });
+});
+
+describe('parseSummarySha', () => {
+  it('reads the SHA back out of a marker written by renderSummaryBody', () => {
+    const sha = '0123456789abcdef0123456789abcdef01234567';
+    const body = renderSummaryBody('glm-5.3', 's', [], [], undefined, { headSha: sha });
+
+    assert.equal(parseSummarySha(body), sha);
+  });
+
+  it('returns undefined for a marker without a SHA', () => {
+    const body = renderSummaryBody('glm-5.3', 's', [], []);
+
+    assert.equal(parseSummarySha(body), undefined);
+  });
+
+  it('returns undefined when there is no marker at all', () => {
+    assert.equal(parseSummarySha('just a comment'), undefined);
   });
 });
